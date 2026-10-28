@@ -1,0 +1,113 @@
+using System.Runtime.InteropServices;
+
+namespace MDir.Shell;
+
+/// <summary>
+/// An immutable shell namespace location stored as a copied ITEMIDLIST.
+/// Keeping the PIDL bytes (not a path) lets virtual folders such as "This PC" round-trip,
+/// the same way Q-Dir stores folders in its .qdr workspace files.
+/// </summary>
+public sealed class ShellLocation : IEquatable<ShellLocation>
+{
+    private readonly byte[] _idList;
+    private string? _displayName;
+
+    private ShellLocation(byte[] idList) => _idList = idList;
+
+    public static ShellLocation Desktop { get; } = new([0, 0]);
+
+    /// <summary>True for the namespace root (an empty ITEMIDLIST).</summary>
+    public bool IsDesktop => _idList.Length <= 2;
+
+    public ReadOnlySpan<byte> IdList => _idList;
+
+    /// <summary>File system path when there is one; otherwise the editable display name ("This PC").</summary>
+    public string DisplayName => _displayName ??= GetName(Sigdn.FileSysPath) ?? GetName(Sigdn.DesktopAbsoluteEditing) ?? string.Empty;
+
+    public string? FileSystemPath => GetName(Sigdn.FileSysPath);
+
+    /// <summary>Parses a path, "shell:" folder or environment-variable string. Returns null when it doesn't resolve.</summary>
+    public static ShellLocation? Parse(string text)
+    {
+        string name = Environment.ExpandEnvironmentVariables(text.Trim().Trim('"'));
+        if (name.Length == 0)
+            return null;
+
+        if (NativeMethods.SHParseDisplayName(name, IntPtr.Zero, out IntPtr pidl, 0, out _) < 0 || pidl == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            return FromPidl(pidl);
+        }
+        finally
+        {
+            NativeMethods.ILFree(pidl);
+        }
+    }
+
+    /// <summary>Copies a native PIDL; the caller keeps ownership of <paramref name="pidl"/>.</summary>
+    public static ShellLocation FromPidl(IntPtr pidl)
+    {
+        var bytes = new byte[NativeMethods.ILGetSize(pidl)];
+        Marshal.Copy(pidl, bytes, 0, bytes.Length);
+        return new ShellLocation(bytes);
+    }
+
+    public static ShellLocation FromIdList(ReadOnlySpan<byte> idList) => new(idList.ToArray());
+
+    public ShellLocation? GetParent()
+    {
+        if (IsDesktop)
+            return null;
+
+        using NativePidl pidl = ToNative();
+        NativeMethods.ILRemoveLastID(pidl.Handle);
+        return FromPidl(pidl.Handle);
+    }
+
+    /// <summary>Allocates a CoTaskMem copy for APIs that take a PIDL.</summary>
+    public NativePidl ToNative()
+    {
+        IntPtr handle = Marshal.AllocCoTaskMem(_idList.Length);
+        Marshal.Copy(_idList, 0, handle, _idList.Length);
+        return new NativePidl(handle);
+    }
+
+    private string? GetName(Sigdn sigdn)
+    {
+        using NativePidl pidl = ToNative();
+        if (NativeMethods.SHGetNameFromIDList(pidl.Handle, sigdn, out IntPtr name) < 0)
+            return null;
+
+        try
+        {
+            return Marshal.PtrToStringUni(name);
+        }
+        finally
+        {
+            Marshal.FreeCoTaskMem(name);
+        }
+    }
+
+    public bool Equals(ShellLocation? other) => other is not null && _idList.AsSpan().SequenceEqual(other._idList);
+
+    public override bool Equals(object? obj) => Equals(obj as ShellLocation);
+
+    public override int GetHashCode()
+    {
+        var hash = new HashCode();
+        hash.AddBytes(_idList);
+        return hash.ToHashCode();
+    }
+
+    public override string ToString() => DisplayName;
+}
+
+/// <summary>Owns a CoTaskMem-allocated PIDL.</summary>
+public readonly struct NativePidl(IntPtr handle) : IDisposable
+{
+    public IntPtr Handle { get; } = handle;
+
+    public void Dispose() => Marshal.FreeCoTaskMem(Handle);
+}
