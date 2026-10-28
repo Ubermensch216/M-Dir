@@ -202,6 +202,10 @@ internal static partial class NativeMethods
     public const int WM_SYSCHAR = 0x0106;
     public const int WM_KEYLAST = 0x0109;
     public const int WM_APPCOMMAND = 0x0319;
+    public const int WM_LBUTTONDOWN = 0x0201;
+    public const int WM_RBUTTONDOWN = 0x0204;
+    public const int WM_MBUTTONDOWN = 0x0207;
+    public const int WM_XBUTTONDOWN = 0x020B;
     public const int APPCOMMAND_BROWSER_BACKWARD = 1;
     public const int APPCOMMAND_BROWSER_FORWARD = 2;
 
@@ -236,6 +240,10 @@ internal static partial class NativeMethods
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr SetFocus(IntPtr hWnd);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool IsChild(IntPtr hWndParent, IntPtr hWnd);
 
     [LibraryImport("user32.dll", EntryPoint = "GetClassNameW", StringMarshalling = StringMarshalling.Utf16)]
     public static unsafe partial int GetClassName(IntPtr hWnd, char* lpClassName, int nMaxCount);

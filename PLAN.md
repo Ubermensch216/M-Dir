@@ -263,11 +263,19 @@ windowplacement=x;y;w;h|sw=1
 |---|---|---|
 | 0단계 | ✅ 완료 (2026-10-28) | `MDir.slnx`, `src/MDir`(WinForms, .NET 10, 실행 파일 `M-Dir.exe`), `tests/MDir.Tests`(xUnit) |
 | 1단계 | ✅ 완료 (2026-10-28) | `ExplorerBrowserHost`(IExplorerBrowser 호스팅), 자체 탐색 기록, 패널 단위 보기 모드, 키보드 라우팅(화살표·Tab·Backspace·셸 단축키), 마우스 뒤로/앞으로 버튼, 주소창 자동 완성. 테스트 14개 통과(통합 테스트 3개는 실제 셸 뷰로 검증) |
+| 2단계 | ✅ 완료 (2026-10-29) | `PaneControl`(탐색 막대 + 셸 뷰 + 상태 표시줄, 활성 패널 테두리), `PaneLayout`(레이아웃 13종 분할 트리), `PaneArranger`(배치 계산), `PaneLayoutPanel`(분할선 드래그·더블클릭 초기화), 레이아웃 메뉴(Alt+L, 아이콘), F6/Shift+F6/Ctrl+Alt+1~4. 테스트 43개 통과 |
 
 1단계에서 결정한 사항:
 - 탐색 기록은 `EBO_NOTRAVELLOG`로 브라우저 자체 기록을 끄고 `NavigationHistory<ShellLocation>`로 직접 관리합니다(3단계 탭 전환 시 브라우저를 다시 만들어도 기록이 남도록).
 - 보기 모드는 `EBO_NOPERSISTVIEWSTATE`로 폴더별 저장을 끄고 패널 단위로 유지합니다(Q-Dir의 `ViewModeN`과 같은 방식).
 - 선택 변경 이벤트는 임시로 250ms 간격 폴링을 씁니다. 6단계에서 `ICommDlgBrowser`(Q-Dir도 구현함)를 넣으면서 `OnStateChange`로 바꿉니다.
+
+2단계에서 결정한 사항:
+- 레이아웃은 이진 분할 트리이고, 분할선 번호는 트리 전위 순서입니다. 기본 레이아웃(4 패널 2×2, 세로 분할선 기준)은 분할선 0이 세로, 1·2가 각 열의 가로선이라 Q-Dir의 `SP0`/`SP1`/`SP2`와 대응합니다. 레이아웃을 바꾸면 비율은 그 레이아웃의 기본값(균등 분할)으로 돌아갑니다.
+- 레이아웃 번호(1~13)는 M-Dir 자체 번호입니다. Q-Dir `.qdr`의 `ViewMode` 값과의 대응은 확인하지 않았으므로 4단계 `.qdr` 가져오기에서 맞춥니다(`ViewMode=0`이 4분할 기본값인 것만 확인).
+- 패널 4개는 항상 만들어 두고 레이아웃에 없는 패널은 숨깁니다. 셸 뷰는 처음 보일 때 생성되고, 숨겨도 폴더와 기록이 유지됩니다.
+- 활성 패널은 `IMessageFilter`로 마우스 버튼 메시지를 보고 판정합니다. 셸 뷰 안쪽은 네이티브 창이라 WinForms 포커스 이벤트가 오지 않기 때문입니다. 6단계에서 `ICommDlgBrowser::OnStateChange(CDBOSC_SETFOCUS)`가 들어오면 함께 씁니다.
+- 패널 기본 폴더: 1 = 시작 위치(명령줄 인자 또는 내 PC), 2 = 문서, 3 = 다운로드, 4 = 바탕 화면.
 
 ---
 
