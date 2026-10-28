@@ -20,7 +20,7 @@
 
 - **x86 32비트 Win32 GUI**, Visual C++ 6.0 링커, 순수 Win32 API + **ATL/WTL** (`WTL_XSplitterWindow`, `AXWIN Frame Window` 문자열 확인)
 - 코드 서명: GlobalSign EV 인증서(유효)
-- **파일 목록은 직접 그리지 않음** — Windows 셸의 `IShellView`(`SHELLDLL_DefView`) / `ExplorerBrowserControl`을 패널마다 호스팅함. 그래서 우클릭 메뉴, 썸네일, 열, 그룹화, 드래그앤드롭이 Windows 탐색기와 같음
+- **파일 목록은 직접 그리지 않음** — 메인 패널은 `IShellBrowser`를 직접 구현해 Windows 셸의 `IShellView`(`SHELLDLL_DefView`)를 호스팅함(자세한 내용은 1.6 REA 분석 참고). 그래서 우클릭 메뉴, 썸네일, 열, 그룹화, 드래그앤드롭이 Windows 탐색기와 같음
 - 주요 import:
   - `SHELL32`: `SHGetDesktopFolder`, `SHFileOperationW`, `SHGetFileInfoW`, `ShellExecuteExW`, `DragAcceptFiles`, `Shell_NotifyIconW`(트레이), `SHAppBarMessage`
   - `ole32`: `RegisterDragDrop`/`DoDragDrop`, `OleSetClipboard`/`OleGetClipboard`, `CoCreateInstance`
@@ -94,6 +94,44 @@ windowplacement=x;y;w;h|sw=1
 | Ctrl+Alt+A | 새 탭 | Alt+L | 레이아웃 선택 |
 | Ctrl+R | 다중 이름 바꾸기 | Ctrl+Shift+V | 붙여넣기 관련 |
 
+### 1.6 REA 분석 (디컴파일 근거)
+
+[REA](https://github.com/morluto/rea) 6.8.0 + Ghidra 12.1.4로 `Q-Dir.exe`를 분석했습니다(함수 4,470개, 문자열 1,939개). 주소는 Ghidra 기준 가상 주소입니다.
+
+**패널 호스팅 방식**
+
+| 근거 | 주소 | 결론 |
+|---|---|---|
+| QueryInterface가 `IUnknown`·`IOleWindow`·`IShellBrowser`·`ICommDlgBrowser`·`ICommDlgBrowser2`·`IPersistFolder2`·`IServiceProvider`에 응답 | `0x4510d8`, `0x48d214` | 메인 패널은 **`IShellBrowser`를 직접 구현**하고 `IShellView::CreateViewWindow`로 DefView를 띄움(`IShellView2/3` GUID 없음) |
+| 패널 뷰에 `LVM_GETSELECTEDCOUNT`(0x1032) 전송, `FindWindowEx(DefView, "SysListView32")` | `0x459914`, `0x451d60` | 탐색기가 아닌 브라우저에 호스팅된 DefView는 **기존 `SysListView32`**를 씀 |
+| `CoCreateInstance(CLSID_ExplorerBrowser)`가 대화상자 프로시저의 `WM_INITDIALOG`에서만 호출 | `0x401a98`, `0x4018b6` | `IExplorerBrowser`는 열 편집 대화상자 같은 **보조 창에만** 씀. `IColumnManager`(`0x402099`)로 열을 다루고, 탐색 창 분할선은 마우스 메시지를 흉내 내 조정(`0x40287e`) |
+
+**색상 필터**
+
+- 기본 프리셋 15종을 7필드 표(패턴, 사용, 글자색, 배경색, 굵게…)로 만들어 INI `[Filter2]`에 기록함(`0x46c2cd`)
+- 규칙 컴파일: 패턴을 `;`로 나누고 대문자로 바꿈. `#BG`/`#BG-A`(활성 패널 배경)는 전역값으로 따로 저장함(`0x46c03f`)
+- 매칭: `IShellFolder::GetDisplayNameOf`로 이름을, `GetAttributesOf`로 속성을 읽어 와일드카드로 비교함. `#DIR` = `SFGAO_FOLDER`, `#Hidden` = `SFGAO_HIDDEN|SFGAO_GHOSTED`(`0x46d863`)
+- 그리기: DefView를 서브클래스해 목록의 `NM_CUSTOMDRAW`를 처리함. `CDDS_ITEMPREPAINT`에서 `dwItemSpec`으로 PIDL을 구해 `clrText`/`clrTextBk`를 설정하고 `CDRF_NEWFONT`를 반환함(`0x452b20`)
+- 목록 서브클래스: `LVM_SETBKCOLOR`·`LVM_SETTEXTBKCOLOR`를 가로채 배경색 강제, Shift+휠 → 가로 스크롤, `LVM_SETSELECTEDCOLUMN(-1)`로 정렬 열 강조 끄기(`0x451b2a`)
+- 트리 항목에도 같은 규칙 적용(`TVM_GETITEMRECT` + `INameSpaceTreeControl::HitTest`, `0x461163`)
+
+**파일 필터** — `IFolderFilter`는 쓰지 않고 **`ICommDlgBrowser::IncludeObject`**로 구현함(`0x456a3f`)
+- 이름을 소문자로 바꿔 패턴 목록과 와일드카드 비교(`0x456b7b`)
+- `by_auto_wildcard`: 패턴이 하나면 `*패턴*`으로 감쌈 / `by_negativ`: 결과 반전 / `by_dir_filter`가 꺼져 있으면 폴더는 항상 표시(`0x456b2b`)
+
+**그 밖의 구현**
+
+| 기능 | 구현 | 주소 |
+|---|---|---|
+| 열·정렬 저장 | DefView 상태 바이트를 `%XX`로 인코딩 + `\|CODEMODE1\|길이\|체크섬`. 폴더 종류(CLSID)별 INI `Spatlen_` 키에 저장(`IShellBrowser::GetViewStateStream`) | `0x47771e`, `0x479dff` |
+| 트리 | `CLSID_NamespaceTreeControl` + `INameSpaceTreeControl::Initialize`. 플래그 HASEXPANDOS·HASLINES·HORIZONTALSCROLL·SHOWSELECTIONALWAYS·TABSTOP(+ALLOWJUNCTIONS/NOEDITLABELS/SPRINGEXPAND 옵션). 안쪽 `SysTreeView32` 서브클래스 | `0x460bb6` |
+| 파일 작업 | `IFileOperation` + `FOF_ALLOWUNDO`, Shift를 누르면 영구 삭제 | `0x45f296` |
+| 우클릭 메뉴 | `IContextMenu`/`IContextMenu2`/`IContextMenu3` 직접 처리 | `0x48d72c`, `0x48f18c` |
+| 주소창 | `IAutoComplete2` | `0x4666c7` |
+| 미리보기 | `IPreviewHandler` 없음 → WebBrowser/WMP 컨트롤 + GDI+ | — |
+
+**REA 정적 검사**: import 14개 DLL·542개(imphash `a039e968…`), TLS 콜백 없음, 로드 설정 없음(VC6 빌드라 CFG/GS 없음).
+
 ---
 
 ## 2. 기술 선택
@@ -166,12 +204,15 @@ windowplacement=x;y;w;h|sw=1
 - **완료 기준**: 트리를 켜고 끌 수 있고, 목록과 양방향으로 동기화됨
 
 ### 6단계 — 색상 필터 & 파일 필터 (3~4일)
-- **파일 필터**: `IFolderFilter`(`IFolderFilterSite.SetFilter`)로 포함/제외 와일드카드를 적용. 필터 입력 UI와 최근 필터 기록
-- **색상 필터**: `ExplorerBrowser`의 목록은 셸 내부 ListView이므로 하위 클래스화한 `SysListView32`에서 `NM_CUSTOMDRAW`를 처리해 항목 텍스트 색을 바꿈. 항목명 → 규칙 매칭
-  - 규칙 형식은 원본과 호환: `패턴;패턴=사용=RRGGBB`, 특수 키 `#Hidden`, `#DIR`
+- **ListView 모드 전환**: `IExplorerBrowser.Initialize` 전에 `IFolderViewOptions.SetFolderViewOptions(FVO_VISTALAYOUT)`를 지정 → 목록이 DirectUI 대신 `SysListView32`가 됨 (✅ 2026-10-28 실측: 기본값은 `DirectUIHWND`, 지정 시 `SysListView32`)
+- **파일 필터**: Q-Dir과 같이 `ICommDlgBrowser::IncludeObject`로 구현. `IUnknown_SetSite`로 `IServiceProvider`를 넘기고 `QueryService(SID_SExplorerBrowserFrame)`에서 `ICommDlgBrowser`를 반환. 옵션은 원본과 같게: 자동 와일드카드(`*패턴*`), 제외 필터(반전), 폴더 제외 여부. 필터 입력 UI와 최근 필터 기록
+  - `ICommDlgBrowser::OnStateChange(CDBOSC_SELCHANGE)`로 선택 변경 이벤트를 받아 1단계의 250ms 폴링을 대체
+- **색상 필터**: DefView(`SHELLDLL_DefView`)를 서브클래스해 목록의 `NM_CUSTOMDRAW`를 처리. `CDDS_ITEMPREPAINT`에서 `IFolderView.Item(dwItemSpec)`으로 PIDL을 얻어 규칙과 매칭하고 `clrText`/`clrTextBk`를 설정
+  - 규칙 형식은 원본과 호환: `패턴;패턴=사용=RRGGBB=…`, 특수 키 `#Hidden`(SFGAO_HIDDEN|GHOSTED), `#DIR`(SFGAO_FOLDER), `#BG`/`#BG-A`(배경/활성 패널 배경)
+  - 목록 서브클래스로 배경색 강제, Shift+휠 가로 스크롤, 정렬 열 강조 끄기(옵션)
 - 색상 규칙 편집 대화상자(가져오기/내보내기)
 - **완료 기준**: `*.exe`가 빨간색으로 보이고, `*.bak`을 제외 필터로 숨길 수 있음
-- ⚠ 위험: Windows 버전에 따라 DefView 내부 ListView 구조가 다름 → 1단계 직후 PoC로 먼저 검증
+- 참고: ListView 모드에서는 Windows 11 탐색기의 일부 새 UI(예: 그룹 헤더 모양)가 기존 스타일로 보임. Q-Dir도 같은 모양임
 
 ### 7단계 — 즐겨찾기 / 퀵링크 (2~3일)
 - 즐겨찾기 폴더(`Favorites\`)에 `.lnk`를 저장(`IShellLink`). 하위 폴더는 메뉴 계층이 됨
@@ -216,6 +257,18 @@ windowplacement=x;y;w;h|sw=1
 
 **총 예상: 약 8~11주** (핵심 MVP인 0~4단계: 약 3주)
 
+### 진행 상황
+
+| 단계 | 상태 | 비고 |
+|---|---|---|
+| 0단계 | ✅ 완료 (2026-10-28) | `MDir.slnx`, `src/MDir`(WinForms, .NET 10, 실행 파일 `M-Dir.exe`), `tests/MDir.Tests`(xUnit) |
+| 1단계 | ✅ 완료 (2026-10-28) | `ExplorerBrowserHost`(IExplorerBrowser 호스팅), 자체 탐색 기록, 패널 단위 보기 모드, 키보드 라우팅(화살표·Tab·Backspace·셸 단축키), 마우스 뒤로/앞으로 버튼, 주소창 자동 완성. 테스트 14개 통과(통합 테스트 3개는 실제 셸 뷰로 검증) |
+
+1단계에서 결정한 사항:
+- 탐색 기록은 `EBO_NOTRAVELLOG`로 브라우저 자체 기록을 끄고 `NavigationHistory<ShellLocation>`로 직접 관리합니다(3단계 탭 전환 시 브라우저를 다시 만들어도 기록이 남도록).
+- 보기 모드는 `EBO_NOPERSISTVIEWSTATE`로 폴더별 저장을 끄고 패널 단위로 유지합니다(Q-Dir의 `ViewModeN`과 같은 방식).
+- 선택 변경 이벤트는 임시로 250ms 간격 폴링을 씁니다. 6단계에서 `ICommDlgBrowser`(Q-Dir도 구현함)를 넣으면서 `OnStateChange`로 바꿉니다.
+
 ---
 
 ## 4. 검증 체크리스트 (Q-Dir와 동작 비교)
@@ -234,7 +287,7 @@ windowplacement=x;y;w;h|sw=1
 | 위험 | 대응 |
 |---|---|
 | .NET에서 `IExplorerBrowser` 호스팅 시 포커스·키보드 문제 | 1단계에서 PoC로 먼저 검증. `IInputObject`, `TranslateAccelerator`를 전달하고, 실패하면 C++/CLI 브리지 또는 C++ 전환을 검토 |
-| 셸 내부 ListView 색상 변경(비공개 구조 의존) | 6단계 PoC를 1단계 직후로 앞당김. 실패하면 색상 필터를 `IListView` 비공개 인터페이스나 오버레이 방식으로 대체 |
+| 셸 내부 ListView 색상 변경(비공개 구조 의존) | ✅ 해소: `FVO_VISTALAYOUT`으로 `SysListView32` 모드가 되는 것을 실측함. Q-Dir도 같은 `SysListView32` + `NM_CUSTOMDRAW` 방식(REA 분석 1.6) |
 | 탭이 많을 때 메모리 사용 | 활성 탭만 브라우저 인스턴스를 유지하고 나머지는 지연 생성 |
 | 폴더 크기 계산 부하 | 취소 가능한 백그라운드 작업, 결과 캐시, 네트워크 드라이브 제외 옵션 |
 | 원본 상표·리소스 | 아이콘·문자열·언어팩·바이너리는 재사용하지 않고 기능만 독자적으로 구현. `.qdr` 가져오기는 형식 호환만 제공 |

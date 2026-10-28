@@ -317,8 +317,8 @@ public sealed class ExplorerBrowserHost : Control
         NavigationFailed?.Invoke(this, new NavigationFailedEventArgs(ShellLocation.FromPidl(pidl)));
     }
 
-    // The browser has no selection-changed event short of implementing ICommDlgBrowser (which switches
-    // DefView into file-dialog mode), so poll the cheap counters instead.
+    // Stopgap until ICommDlgBrowser (stage 6, needed for IncludeObject filtering) provides OnStateChange:
+    // poll the cheap counters instead.
     private void PollViewState()
     {
         if (_folderView is null)
