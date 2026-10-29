@@ -16,6 +16,13 @@ internal sealed class IniFile
 
     public bool HasSection(string section) => Find(section) is not null;
 
+    /// <summary>Drops a section with all its keys (nothing happens when it does not exist).</summary>
+    public void RemoveSection(string section) => _sections.RemoveAll(existing => string.Equals(existing.Name, section, StringComparison.OrdinalIgnoreCase));
+
+    /// <summary>The keys of a section in file order (empty when the section does not exist).</summary>
+    public IReadOnlyList<(string Key, string Value)> Entries(string section) =>
+        Find(section) is { } found ? [.. found.Entries.Select(pair => (pair.Key, pair.Value))] : [];
+
     public string? Get(string section, string key) =>
         Find(section)?.Entries.TryGetValue(key, out string? value) == true ? value : null;
 

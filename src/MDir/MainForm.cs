@@ -1,3 +1,4 @@
+using MDir.Commands;
 using MDir.Features;
 using MDir.Layout;
 using MDir.Panes;
@@ -7,19 +8,18 @@ using MDir.Shell;
 namespace MDir;
 
 /// <summary>
-/// Main window: up to four Explorer panes arranged by a <see cref="PaneLayout"/>. Menu commands act on the
-/// active pane, which is chosen by clicking into a pane or with F6 / Ctrl+Alt+1~4. The whole arrangement is a
+/// Main window: up to four Explorer panes arranged by a <see cref="PaneLayout"/>. Commands act on the active
+/// pane, which is chosen by clicking into a pane or with F6 / Ctrl+Alt+1~4. The whole arrangement is a
 /// <see cref="Workspace"/> that can be saved, opened and (with a profile) restored automatically.
+/// Menus, toolbar and keyboard shortcuts are built from the command registry in MainForm.Commands.cs.
 /// </summary>
-internal sealed class MainForm : Form, IMessageFilter
+internal sealed partial class MainForm : Form, IMessageFilter
 {
     private const string WorkspaceFilter = "M-Dir 작업 공간 (*.mdr)|*.mdr|모든 파일 (*.*)|*.*";
 
     private readonly PaneControl[] _panes;
     private readonly PaneLayoutPanel _layoutPanel;
     private readonly AppProfile? _profile;
-    private ToolStripMenuItem _multilineMenu = null!;
-    private ToolStripMenuItem _autoWorkspaceMenu = null!;
     private readonly Panel _workArea = new() { Dock = DockStyle.Fill };
     private readonly Splitter _sharedSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 80, MinExtra = 300, Visible = false };
     private readonly AppSettings _fallbackSettings = new();
@@ -28,19 +28,15 @@ internal sealed class MainForm : Form, IMessageFilter
     private bool _sharedTreeVisible;
     private int _sharedTreeSplit = Workspace.DefaultTreeSplit;
     private bool _applyingSharedWidth;
-    private ToolStripMenuItem _colorMenu = null!;
-    private ToolStripMenuItem _filterMenu = null!;
-    private ToolStripMenuItem _treeMenu = null!;
-    private ToolStripMenuItem _treePaneModeMenu = null!;
-    private ToolStripMenuItem _treeSharedModeMenu = null!;
-    private readonly List<(Func<TreeOptions, bool> Get, Action<TreeOptions, bool> Set, ToolStripMenuItem Item)> _treeOptionItems = [];
+    private readonly FavoritesStore? _favorites;
+    private readonly Splitter _previewSplitter = new() { Dock = DockStyle.Right, Width = 5, MinSize = 150, MinExtra = 300, Visible = false };
+    private readonly System.Windows.Forms.Timer _previewTimer = new() { Interval = 150 };
+    private PreviewPane? _previewPane;
+    private bool _previewVisible;
+    private int _previewSplit = Workspace.DefaultPreviewSplit;
+    private bool _applyingPreviewWidth;
+    private bool _multilineTabs;
     private string? _workspacePath;
-    private readonly ToolStripMenuItem _backMenu;
-    private readonly ToolStripMenuItem _forwardMenu;
-    private readonly ToolStripMenuItem _upMenu;
-    private readonly ToolStripMenuItem[] _paneMenus = new ToolStripMenuItem[PaneLayout.MaxPanes];
-    private readonly List<(ViewPreset Preset, ToolStripMenuItem Item)> _viewItems = [];
-    private readonly List<(PaneLayout Layout, ToolStripMenuItem Item)> _layoutItems = [];
     private PaneControl _activePane;
 
     /// <param name="startFolder">A folder from the command line: shown in pane 1 (the default workspace's first pane when there is no saved one).</param>
@@ -54,6 +50,7 @@ internal sealed class MainForm : Form, IMessageFilter
         StartPosition = FormStartPosition.CenterScreen;
         _profile = profile;
         _workspacePath = workspacePath;
+        _favorites = CreateFavoritesStore(profile);
 
         _panes = [.. Enumerable.Range(0, PaneLayout.MaxPanes).Select(i => new PaneControl(i))];
         _activePane = _panes[0];
@@ -67,6 +64,16 @@ internal sealed class MainForm : Form, IMessageFilter
             };
             pane.Enter += (_, _) => ActivatePane(pane, focus: false);
             pane.ViewFocused += (_, _) => ActivatePane(pane, focus: false);
+            pane.SelectionChanged += (_, _) =>
+            {
+                if (pane == _activePane)
+                {
+                    SchedulePreview();
+                    RefreshCommandStates();
+                }
+            };
+            pane.Favorites = _favorites;
+            pane.ManageFavoritesRequested += (_, _) => ManageFavorites();
             pane.FilterCommitted += (_, pattern) => RememberFilter(pattern);
             pane.ColorRules = ActiveColorRules;
             pane.SetRecentFilters(Settings.RecentFilters);
@@ -75,20 +82,30 @@ internal sealed class MainForm : Form, IMessageFilter
         _layoutPanel = new PaneLayoutPanel(_panes) { Dock = DockStyle.Fill };
         _layoutPanel.LayoutChanged += (_, _) => OnPaneLayoutChanged();
 
-        _backMenu = new ToolStripMenuItem("뒤로(&B)", null, (_, _) => ActiveBrowser.GoBack(), Keys.Alt | Keys.Left);
-        _forwardMenu = new ToolStripMenuItem("앞으로(&F)", null, (_, _) => ActiveBrowser.GoForward(), Keys.Alt | Keys.Right);
-        _upMenu = new ToolStripMenuItem("상위 폴더(&U)", null, (_, _) => ActiveBrowser.GoUp(), Keys.Alt | Keys.Up);
+        RegisterCommands();
+        MenuStrip menu = BuildMenu();
+        ToolStrip toolbar = BuildToolbar();
 
-        var menu = BuildMenu();
-
-        // Z-order matters for docking: the pane area (Fill) is last, then the splitter, then the shared tree (Left).
+        // Z-order matters for docking: the pane area (Fill) is last, then the splitters, then the shared tree (Left).
+        // Top to bottom: menu, toolbar, work area (the later a control is added, the earlier it docks).
         _workArea.Controls.Add(_layoutPanel);
         _workArea.Controls.Add(_sharedSplitter);
+        _workArea.Controls.Add(_previewSplitter);
         Controls.Add(_workArea);
+        Controls.Add(toolbar);
         Controls.Add(menu);
         MainMenuStrip = menu;
         _workArea.BringToFront();
-        _workArea.SizeChanged += (_, _) => ApplySharedTreeWidth();
+        _workArea.SizeChanged += (_, _) =>
+        {
+            ApplySharedTreeWidth();
+            ApplyPreviewWidth();
+        };
+        _previewSplitter.SplitterMoved += (_, _) => OnPreviewSplitterMoved();
+        _previewTimer.Tick += (_, _) => RefreshPreview();
+
+        // The clipboard and other programs change what Paste etc. can do without any event here, so the toolbar is polled.
+        _stateTimer.Tick += (_, _) => RefreshCommandStates();
         _sharedSplitter.SplitterMoved += (_, _) => OnSharedSplitterMoved();
 
         ApplyWorkspace(workspace ?? Workspace.CreateDefault(startFolder ?? Workspace.DefaultLocation), applyWindow: true);
@@ -101,6 +118,7 @@ internal sealed class MainForm : Form, IMessageFilter
 
         OnPaneLayoutChanged();
         UpdateActivePaneState();
+        RefreshAllMenus();
     }
 
     internal string? WorkspacePath => _workspacePath;
@@ -116,10 +134,12 @@ internal sealed class MainForm : Form, IMessageFilter
             Layout = _layoutPanel.CurrentLayout,
             Ratios = [.. _layoutPanel.Ratios],
             ActivePane = _activePane.Index,
-            MultilineTabs = _multilineMenu.Checked,
+            MultilineTabs = _multilineTabs,
             SharedTree = _sharedTreeMode,
             SharedTreeVisible = _sharedTreeVisible,
             SharedTreeSplit = _sharedTreeSplit,
+            PreviewVisible = _previewVisible,
+            PreviewSplit = _previewSplit,
             Window = new WindowPlacement(bounds.X, bounds.Y, bounds.Width, bounds.Height, WindowState == FormWindowState.Maximized),
             Panes = [.. _panes.Select(pane => pane.CaptureState())],
         };
@@ -145,7 +165,10 @@ internal sealed class MainForm : Form, IMessageFilter
         }
 
         UpdateSharedTree();
-        _multilineMenu.Checked = workspace.MultilineTabs;
+        _previewVisible = workspace.PreviewVisible;
+        _previewSplit = workspace.PreviewSplit;
+        UpdatePreview();
+        SetMultilineTabs(workspace.MultilineTabs);
         if (applyWindow && workspace.Window is { } window)
             ApplyWindowPlacement(window);
 
@@ -219,10 +242,12 @@ internal sealed class MainForm : Form, IMessageFilter
     {
         base.OnHandleCreated(e);
         Application.AddMessageFilter(this);
+        _stateTimer.Start();
     }
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        _stateTimer.Stop();
         Application.RemoveMessageFilter(this);
         base.OnHandleDestroyed(e);
     }
@@ -251,129 +276,140 @@ internal sealed class MainForm : Form, IMessageFilter
         }
     }
 
-    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    protected override void Dispose(bool disposing)
     {
-        // Address bar shortcuts (F4 as in Q-Dir, plus Explorer's Alt+D / Ctrl+L).
-        if (keyData is Keys.F4 or (Keys.Alt | Keys.D) or (Keys.Control | Keys.L))
+        if (disposing)
         {
-            _activePane.FocusAddressBar();
-            return true;
+            _previewTimer.Dispose();
+            _stateTimer.Dispose();
         }
 
-        // Alternative tab keys: Q-Dir's Ctrl+Alt+A for a new tab, and Ctrl+PageDown/PageUp to switch.
-        switch (keyData)
-        {
-            case Keys.Control | Keys.Alt | Keys.A:
-                NewTab();
-                return true;
-            case Keys.Control | Keys.PageDown:
-                _activePane.SelectNextTab(1);
-                return true;
-            case Keys.Control | Keys.PageUp:
-                _activePane.SelectNextTab(-1);
-                return true;
-        }
-
-        return base.ProcessCmdKey(ref msg, keyData);
-    }
-
-    private MenuStrip BuildMenu()
-    {
-        var file = new ToolStripMenuItem("파일(&F)");
-        file.DropDownItems.Add(new ToolStripMenuItem("새 작업 공간(&N)", null, (_, _) => NewWorkspace(), Keys.Control | Keys.N));
-        file.DropDownItems.Add(new ToolStripMenuItem("작업 공간 열기(&O)...", null, (_, _) => OpenWorkspace(), Keys.Control | Keys.O));
-        file.DropDownItems.Add(new ToolStripMenuItem("작업 공간 저장(&S)", null, (_, _) => SaveWorkspace(), Keys.Control | Keys.S));
-        file.DropDownItems.Add(new ToolStripMenuItem("다른 이름으로 저장(&A)...", null, (_, _) => SaveWorkspaceAs()));
-        file.DropDownItems.Add(new ToolStripSeparator());
-        _autoWorkspaceMenu = new ToolStripMenuItem("종료 시 저장, 시작 시 복원(&W)")
-        {
-            CheckOnClick = true,
-            Checked = _profile?.Settings.AutoWorkspace ?? false,
-            Enabled = _profile is not null,
-        };
-        _autoWorkspaceMenu.CheckedChanged += (_, _) => SetAutoWorkspace(_autoWorkspaceMenu.Checked);
-        file.DropDownItems.Add(_autoWorkspaceMenu);
-        file.DropDownItems.Add(new ToolStripSeparator());
-        file.DropDownItems.Add(new ToolStripMenuItem("끝내기(&X)", null, (_, _) => Close(), Keys.Alt | Keys.F4));
-
-        var view = new ToolStripMenuItem("보기(&V)");
-        foreach (ViewPreset preset in ViewPreset.All)
-        {
-            var item = new ToolStripMenuItem(preset.Name, null, (_, _) => ActiveBrowser.SetViewMode(preset.Mode, preset.IconSize));
-            _viewItems.Add((preset, item));
-            view.DropDownItems.Add(item);
-        }
-
-        view.DropDownItems.Add(new ToolStripSeparator());
-        view.DropDownItems.Add(new ToolStripMenuItem("새로 고침(&R)", null, (_, _) => ActiveBrowser.RefreshView(), Keys.F5));
-        view.DropDownItems.Add(new ToolStripSeparator());
-        view.DropDownItems.AddRange(BuildTreeMenuItems());
-        view.DropDownItems.Add(new ToolStripSeparator());
-        view.DropDownItems.AddRange(BuildFilterMenuItems());
-
-        var go = new ToolStripMenuItem("이동(&G)");
-        go.DropDownItems.AddRange([_backMenu, _forwardMenu, _upMenu]);
-        go.DropDownItems.Add(new ToolStripSeparator());
-        go.DropDownItems.Add(new ToolStripMenuItem("주소창(&A)", null, (_, _) => _activePane.FocusAddressBar())
-        {
-            ShortcutKeyDisplayString = "F4",
-        });
-
-        // "&L" also gives Q-Dir's Alt+L layout shortcut.
-        var layout = new ToolStripMenuItem("레이아웃(&L)");
-        int iconSize = LogicalToDeviceUnits(16);
-        foreach (PaneLayout paneLayout in PaneLayout.All)
-        {
-            var item = new ToolStripMenuItem(paneLayout.Name, LayoutIcon.Create(paneLayout, iconSize),
-                (_, _) => _layoutPanel.CurrentLayout = paneLayout);
-            _layoutItems.Add((paneLayout, item));
-            layout.DropDownItems.Add(item);
-        }
-
-        layout.DropDownItems.Add(new ToolStripSeparator());
-        layout.DropDownItems.Add(new ToolStripMenuItem("다음 패널(&N)", null, (_, _) => ActivateNextPane(1), Keys.F6));
-        layout.DropDownItems.Add(new ToolStripMenuItem("이전 패널(&P)", null, (_, _) => ActivateNextPane(-1), Keys.Shift | Keys.F6));
-        for (int i = 0; i < PaneLayout.MaxPanes; i++)
-        {
-            int index = i;
-            _paneMenus[i] = new ToolStripMenuItem($"패널 {i + 1}(&{i + 1})", null, (_, _) => ActivatePane(index),
-                Keys.Control | Keys.Alt | (Keys.D1 + i));
-            layout.DropDownItems.Add(_paneMenus[i]);
-        }
-
-        var tabs = new ToolStripMenuItem("탭(&T)");
-        tabs.DropDownItems.Add(new ToolStripMenuItem("새 탭(&N)", null, (_, _) => NewTab(), Keys.Control | Keys.T));
-        tabs.DropDownItems.Add(new ToolStripMenuItem("탭 복제(&D)", null, (_, _) => _activePane.DuplicateTab()));
-        tabs.DropDownItems.Add(new ToolStripMenuItem("탭 닫기(&C)", null, (_, _) => _activePane.CloseTab(_activePane.SelectedTab),
-            Keys.Control | Keys.W));
-        tabs.DropDownItems.Add(new ToolStripSeparator());
-        tabs.DropDownItems.Add(new ToolStripMenuItem("다음 탭", null, (_, _) => _activePane.SelectNextTab(1), Keys.Control | Keys.Tab));
-        tabs.DropDownItems.Add(new ToolStripMenuItem("이전 탭", null, (_, _) => _activePane.SelectNextTab(-1),
-            Keys.Control | Keys.Shift | Keys.Tab));
-        tabs.DropDownItems.Add(new ToolStripSeparator());
-        _multilineMenu = new ToolStripMenuItem("여러 줄 탭(&M)") { CheckOnClick = true };
-        _multilineMenu.CheckedChanged += (_, _) =>
-        {
-            foreach (PaneControl pane in _panes)
-                pane.MultilineTabs = _multilineMenu.Checked;
-        };
-        tabs.DropDownItems.Add(_multilineMenu);
-
-        var menu = new MenuStrip { Dock = DockStyle.Top };
-        menu.Items.AddRange([file, view, go, tabs, layout]);
-        return menu;
+        base.Dispose(disposing);
     }
 
     private AppSettings Settings => _profile?.Settings ?? _fallbackSettings;
 
     private TreeOptions TreeSettings => Settings.Tree;
 
-    private ToolStripItem[] BuildFilterMenuItems()
+    private static FavoritesStore? CreateFavoritesStore(AppProfile? profile)
     {
-        _filterMenu = new ToolStripMenuItem("파일 필터(&I)", null, (_, _) => ToggleFilter(), Keys.Control | Keys.Shift | Keys.F);
-        _colorMenu = new ToolStripMenuItem("색상 필터 사용(&C)", null, (_, _) => SetColorFilterEnabled(!Settings.ColorFilterEnabled));
-        var edit = new ToolStripMenuItem("색상 필터 편집(&E)...", null, (_, _) => EditColorFilter());
-        return [_filterMenu, _colorMenu, edit];
+        if (profile is null)
+            return null;
+
+        var store = new FavoritesStore(profile.Paths.FavoritesDirectory);
+        try
+        {
+            store.EnsureCreated();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return null;
+        }
+
+        return store;
+    }
+
+    private void ManageFavorites()
+    {
+        if (_favorites is null)
+            return;
+
+        using var dialog = new FavoritesDialog(_favorites);
+        dialog.ShowDialog(this);
+    }
+
+    internal PreviewPane? PreviewPane => _previewPane;
+
+    internal bool PreviewVisible => _previewVisible;
+
+    /// <summary>Shows or hides the preview panel (F12).</summary>
+    internal void TogglePreview()
+    {
+        _previewVisible = !_previewVisible;
+        UpdatePreview();
+        RefreshCommandStates();
+    }
+
+    private void UpdatePreview()
+    {
+        if (_previewVisible && _previewPane is null)
+        {
+            // Created on first use; added last so it is docked first and the splitter finds it.
+            _previewPane = new PreviewPane { Dock = DockStyle.Right, Width = 300 };
+            _workArea.Controls.Add(_previewPane);
+        }
+
+        if (_previewPane is not null)
+            _previewPane.Visible = _previewVisible;
+        _previewSplitter.Visible = _previewVisible;
+
+        if (_previewVisible)
+        {
+            ApplyPreviewWidth();
+            SchedulePreview();
+        }
+        else
+        {
+            // Hidden: stop work and let a preview handler release its file.
+            _previewTimer.Stop();
+            _previewPane?.Clear();
+        }
+    }
+
+    /// <summary>Previews the active pane's selection shortly after it stops changing (arrow-key scrolling must not load every file).</summary>
+    private void SchedulePreview()
+    {
+        if (!_previewVisible)
+            return;
+
+        _previewTimer.Stop();
+        _previewTimer.Start();
+    }
+
+    private async void RefreshPreview()
+    {
+        _previewTimer.Stop();
+        if (!_previewVisible || _previewPane is not { } pane)
+            return;
+
+        try
+        {
+            ExplorerBrowserHost browser = ActiveBrowser;
+            await pane.ShowAsync(browser.SelectedCount == 1 ? browser.GetFirstSelected() : null, browser.SelectedCount);
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException)
+        {
+            // A preview that fails must never take the window down; the pane shows its own message for known failures.
+        }
+    }
+
+    private void ApplyPreviewWidth()
+    {
+        if (_previewPane is null || !_previewVisible)
+            return;
+
+        int available = _workArea.ClientSize.Width - _previewSplitter.Width;
+        int width = Math.Clamp(available * _previewSplit / PaneLayout.RatioScale, _previewSplitter.MinSize,
+            Math.Max(_previewSplitter.MinSize, available - _previewSplitter.MinExtra));
+        if (_previewPane.Width == width)
+            return;
+
+        _applyingPreviewWidth = true;
+        try
+        {
+            _previewPane.Width = width;
+        }
+        finally
+        {
+            _applyingPreviewWidth = false;
+        }
+    }
+
+    private void OnPreviewSplitterMoved()
+    {
+        int available = _workArea.ClientSize.Width - _previewSplitter.Width;
+        if (!_applyingPreviewWidth && _previewPane is not null && available > 0)
+            _previewSplit = Math.Clamp(_previewPane.Width * PaneLayout.RatioScale / available, 500, 9500);
     }
 
     /// <summary>The colour rules the panes use right now: null while colouring is switched off.</summary>
@@ -392,7 +428,7 @@ internal sealed class MainForm : Form, IMessageFilter
             _activePane.FocusFilter();
         }
 
-        UpdateFilterMenu();
+        RefreshCommandStates();
     }
 
     internal void SetColorFilterEnabled(bool enabled)
@@ -418,7 +454,7 @@ internal sealed class MainForm : Form, IMessageFilter
         foreach (PaneControl pane in _panes)
             pane.ColorRules = ActiveColorRules;
 
-        UpdateFilterMenu();
+        RefreshCommandStates();
     }
 
     private void RememberFilter(string pattern)
@@ -428,39 +464,6 @@ internal sealed class MainForm : Form, IMessageFilter
             pane.SetRecentFilters(Settings.RecentFilters);
 
         SaveSettings();
-    }
-
-    private void UpdateFilterMenu()
-    {
-        _filterMenu.Checked = _activePane.FilterBarVisible;
-        _colorMenu.Checked = Settings.ColorFilterEnabled;
-    }
-
-    private ToolStripItem[] BuildTreeMenuItems()
-    {
-        _treeMenu = new ToolStripMenuItem("폴더 트리 표시(&T)", null, (_, _) => ToggleTree(), Keys.F9);
-        _treePaneModeMenu = new ToolStripMenuItem("패널별 트리(&P)", null, (_, _) => SetSharedTreeMode(false));
-        _treeSharedModeMenu = new ToolStripMenuItem("공용 트리(&S)", null, (_, _) => SetSharedTreeMode(true));
-
-        var options = new ToolStripMenuItem("트리 옵션(&O)");
-        void AddOption(string text, Func<TreeOptions, bool> get, Action<TreeOptions, bool> set)
-        {
-            var item = new ToolStripMenuItem(text);
-            item.Click += (_, _) =>
-            {
-                set(TreeSettings, !get(TreeSettings));
-                ApplyTreeOptions();
-            };
-            _treeOptionItems.Add((get, set, item));
-            options.DropDownItems.Add(item);
-        }
-
-        AddOption("연결선 표시", o => o.Lines, (o, v) => o.Lines = v);
-        AddOption("전체 행 선택 (연결선 없음)", o => o.FullRowSelect, (o, v) => o.FullRowSelect = v);
-        AddOption("한 번 클릭으로 펼치기", o => o.SingleClickExpand, (o, v) => o.SingleClickExpand = v);
-        AddOption("현재 폴더 자동 펼치기", o => o.AutoExpand, (o, v) => o.AutoExpand = v);
-
-        return [_treeMenu, _treePaneModeMenu, _treeSharedModeMenu, options];
     }
 
     /// <summary>Shows or hides the tree: the active pane's own tree, or the shared one in shared mode.</summary>
@@ -476,7 +479,7 @@ internal sealed class MainForm : Form, IMessageFilter
             _activePane.TreeEnabled = !_activePane.TreeEnabled;
         }
 
-        UpdateTreeMenu();
+        RefreshCommandStates();
     }
 
     /// <summary>Switches between a tree per pane and one tree for the window; each mode keeps its own on/off state.</summary>
@@ -490,12 +493,14 @@ internal sealed class MainForm : Form, IMessageFilter
             pane.TreeAvailable = !shared;
 
         UpdateSharedTree();
-        UpdateTreeMenu();
+        RefreshCommandStates();
     }
 
     internal FolderTreeControl? SharedTree => _sharedTree;
 
     internal bool SharedTreeMode => _sharedTreeMode;
+
+    private bool IsTreeShown => _sharedTreeMode ? _sharedTreeVisible : _activePane.TreeEnabled;
 
     private void ApplyTreeOptions()
     {
@@ -504,7 +509,7 @@ internal sealed class MainForm : Form, IMessageFilter
         if (_sharedTree is not null)
             _sharedTree.Options = TreeSettings;
 
-        UpdateTreeMenu();
+        RefreshCommandStates();
         SaveSettings();
     }
 
@@ -564,13 +569,13 @@ internal sealed class MainForm : Form, IMessageFilter
             _sharedTreeSplit = Math.Clamp(_sharedTree.Width * PaneLayout.RatioScale / available, 500, 9500);
     }
 
-    private void UpdateTreeMenu()
+    internal bool MultilineTabs => _multilineTabs;
+
+    internal void SetMultilineTabs(bool multiline)
     {
-        _treeMenu.Checked = _sharedTreeMode ? _sharedTreeVisible : _activePane.TreeEnabled;
-        _treePaneModeMenu.Checked = !_sharedTreeMode;
-        _treeSharedModeMenu.Checked = _sharedTreeMode;
-        foreach (var (get, _, item) in _treeOptionItems)
-            item.Checked = get(TreeSettings);
+        _multilineTabs = multiline;
+        foreach (PaneControl pane in _panes)
+            pane.MultilineTabs = multiline;
     }
 
     private void NewTab()
@@ -670,6 +675,7 @@ internal sealed class MainForm : Form, IMessageFilter
             _activePane = pane;
             pane.IsActive = true;
             UpdateActivePaneState();
+            SchedulePreview();
         }
 
         if (focus)
@@ -678,30 +684,19 @@ internal sealed class MainForm : Form, IMessageFilter
 
     private void OnPaneLayoutChanged()
     {
-        PaneLayout current = _layoutPanel.CurrentLayout;
-        foreach (var (paneLayout, item) in _layoutItems)
-            item.Checked = paneLayout == current;
-        for (int i = 0; i < _paneMenus.Length; i++)
-            _paneMenus[i].Enabled = _layoutPanel.IsPaneVisible(i);
-
         if (!_layoutPanel.IsPaneVisible(_activePane.Index))
             ActivatePane(_panes[0], focus: true);
+
+        RefreshCommandStates();
     }
 
     private void UpdateActivePaneState()
     {
         ExplorerBrowserHost browser = ActiveBrowser;
-        _backMenu.Enabled = browser.CanGoBack;
-        _forwardMenu.Enabled = browser.CanGoForward;
-        _upMenu.Enabled = browser.CanGoUp;
-        foreach (var (preset, item) in _viewItems)
-            item.Checked = preset.Matches(browser.ViewMode, browser.IconSize);
-
         string name = browser.CurrentLocation?.DisplayName ?? string.Empty;
         Text = name.Length > 0 ? $"{name} - M-Dir" : "M-Dir";
 
         SyncSharedTree();
-        UpdateTreeMenu();
-        UpdateFilterMenu();
+        RefreshCommandStates();
     }
 }

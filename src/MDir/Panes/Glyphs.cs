@@ -15,6 +15,7 @@ internal static class Glyphs
     public static readonly string ChevronDown = ((char)0xE70D).ToString();
     public static readonly string Add = ((char)0xE710).ToString();
     public static readonly string Close = ((char)0xE711).ToString();
+    public static readonly string Favorite = ((char)0xE734).ToString();
 
     public static Font Font { get; } = CreateFont();
 

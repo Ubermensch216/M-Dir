@@ -161,6 +161,26 @@ internal static class ShellItems
         }
     }
 
+    /// <summary>
+    /// The item for a file system path, used as it is (unlike <see cref="ShellLocation.Parse"/>, which expands
+    /// <c>%variables%</c> and would change a file name that contains percent signs).
+    /// </summary>
+    public static IShellItem? FromPath(string path)
+    {
+        Guid iid = IidShellItem;
+        if (NativeMethods.SHCreateItemFromParsingName(path, IntPtr.Zero, ref iid, out IntPtr item) < 0 || item == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            return (IShellItem)Marshal.GetObjectForIUnknown(item);
+        }
+        finally
+        {
+            Marshal.Release(item);
+        }
+    }
+
     public static ShellLocation? ToLocation(IShellItem item)
     {
         IntPtr unknown = Marshal.GetIUnknownForObject(item);

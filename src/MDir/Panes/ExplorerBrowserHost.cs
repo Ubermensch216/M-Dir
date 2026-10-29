@@ -65,6 +65,9 @@ public sealed class ExplorerBrowserHost : Control
     /// <summary>Raised when the shell view's list gets keyboard focus (also by a click inside it).</summary>
     public event EventHandler? ViewFocused;
 
+    /// <summary>Raised when the selection changed, and after navigating (which clears it).</summary>
+    public event EventHandler? SelectionChanged;
+
     /// <summary>The object the shell view queries for item filtering and state notifications.</summary>
     internal ShellViewSite ViewSite { get; } = new();
 
@@ -185,6 +188,148 @@ public sealed class ExplorerBrowserHost : Control
         ViewModeChanged?.Invoke(this, EventArgs.Empty);
         if (history.Current is { } location)
             BrowseTo(location, PendingNavigation.Restore);
+    }
+
+    /// <summary>
+    /// The first selected item (a full location), or null when nothing is selected. Together with
+    /// <see cref="SelectedCount"/> this tells whether exactly one item is selected.
+    /// </summary>
+    internal ShellLocation? GetFirstSelected()
+    {
+        if (_folderView is null || _folderView.GetSelection(0, out IntPtr array) < 0 || array == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            var items = (IShellItemArray)Marshal.GetObjectForIUnknown(array);
+            return items.GetCount(out uint count) >= 0 && count > 0 && items.GetItemAt(0, out IShellItem item) >= 0
+                ? ShellItems.ToLocation(item)
+                : null;
+        }
+        finally
+        {
+            Marshal.Release(array);
+        }
+    }
+
+    /// <summary>All selected items as full locations (virtual items such as "This PC" included).</summary>
+    internal IReadOnlyList<ShellLocation> GetSelectedLocations(int limit = 100_000)
+    {
+        var locations = new List<ShellLocation>();
+        if (_folderView is null || _folderView.GetSelection(0, out IntPtr array) < 0 || array == IntPtr.Zero)
+            return locations;
+
+        try
+        {
+            var items = (IShellItemArray)Marshal.GetObjectForIUnknown(array);
+            if (items.GetCount(out uint count) < 0)
+                return locations;
+
+            for (uint i = 0; i < Math.Min(count, (uint)limit); i++)
+            {
+                if (items.GetItemAt(i, out IShellItem item) >= 0 && ShellItems.ToLocation(item) is { } location)
+                    locations.Add(location);
+            }
+        }
+        finally
+        {
+            Marshal.Release(array);
+        }
+
+        return locations;
+    }
+
+    /// <summary>The file system paths of the selected items (items without one are left out).</summary>
+    internal IReadOnlyList<string> GetSelectedPaths() => [.. GetSelectedLocations().Select(location => location.FileSystemPath).OfType<string>()];
+
+    /// <summary>The classic list of the shell view, or zero before it exists.</summary>
+    private IntPtr ListWindow => _view is not null && _view.GetWindow(out IntPtr window) >= 0 ? NativeMethods.FindDescendant(window, "SysListView32") : IntPtr.Zero;
+
+    internal void SelectAll() => SetAllSelected(_ => true);
+
+    internal void InvertSelection() => SetAllSelected(wasSelected => !wasSelected);
+
+    /// <summary>Starts in-place renaming of the selected item (the first one when several are selected).</summary>
+    internal bool BeginRename()
+    {
+        IntPtr list = ListWindow;
+        if (list == IntPtr.Zero || _folderView is null || _folderView.GetSelectedItem(-1, out int index) < 0 || index < 0)
+            return false;
+
+        NativeMethods.SetFocus(list);
+        return NativeMethods.SendMessage(list, NativeMethods.LVM_EDITLABEL, (IntPtr)index, IntPtr.Zero) != IntPtr.Zero;
+    }
+
+    /// <summary>Runs a shell verb ("properties", "copy"...) on the selected items.</summary>
+    internal bool InvokeVerb(string verb) => _folderView?.InvokeVerbOnSelection(verb) >= 0;
+
+    /// <summary>
+    /// Selects the item named like <paramref name="path"/> once the view lists it (a file just created shows up a
+    /// moment later), waiting at most <paramref name="timeout"/>. Returns false when it never appeared.
+    /// </summary>
+    internal async Task<bool> SelectPathAsync(string path, TimeSpan timeout)
+    {
+        string name = Path.GetFileName(Path.TrimEndingDirectorySeparator(path));
+        DateTime deadline = DateTime.UtcNow + timeout;
+        while (DateTime.UtcNow < deadline)
+        {
+            if (IsDisposed)
+                return false;
+
+            if (FindItemIndex(name) is int index and >= 0 && _folderView!.SelectItem(index, Svsi.Select | Svsi.DeselectOthers | Svsi.EnsureVisible | Svsi.Focused) >= 0)
+                return true;
+
+            await Task.Delay(80);
+        }
+
+        return false;
+    }
+
+    private int FindItemIndex(string name)
+    {
+        if (_folderView is null || ShellFolderItems.GetFolder(_folderView) is not { } folder || _folderView.ItemCount(Svgio.AllView, out int count) < 0)
+            return -1;
+
+        for (int i = 0; i < count; i++)
+        {
+            if (_folderView.Item(i, out IntPtr pidl) < 0 || pidl == IntPtr.Zero)
+                continue;
+
+            try
+            {
+                if (string.Equals(ShellFolderItems.GetName(folder, pidl), name, StringComparison.OrdinalIgnoreCase))
+                    return i;
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(pidl);
+            }
+        }
+
+        return -1;
+    }
+
+    /// <summary>Sets every list item's selection to <paramref name="decide"/>(was it selected).</summary>
+    private unsafe void SetAllSelected(Func<bool, bool> decide)
+    {
+        IntPtr list = ListWindow;
+        if (list == IntPtr.Zero || _folderView is null || _folderView.ItemCount(Svgio.AllView, out int count) < 0)
+            return;
+
+        // LVITEM: state and stateMask sit at offsets 12 and 16, before any pointer member.
+        byte* item = stackalloc byte[128];
+        for (int i = 0; i < count; i++)
+        {
+            bool wasSelected = ((int)NativeMethods.SendMessage(list, NativeMethods.LVM_GETITEMSTATE, (IntPtr)i, (IntPtr)NativeMethods.LVIS_SELECTED) & NativeMethods.LVIS_SELECTED) != 0;
+            bool select = decide(wasSelected);
+            if (select == wasSelected)
+                continue;
+
+            new Span<byte>(item, 128).Clear();
+            *(int*)(item + 12) = select ? NativeMethods.LVIS_SELECTED : 0;
+            *(int*)(item + 16) = NativeMethods.LVIS_SELECTED;
+            NativeMethods.SendMessage(list, NativeMethods.LVM_SETITEMSTATE, (IntPtr)i, (IntPtr)item);
+        }
     }
 
     internal void SetViewMode(FolderViewMode mode, int iconSize)
@@ -400,7 +545,10 @@ public sealed class ExplorerBrowserHost : Control
     private void OnViewStateChanged(uint change)
     {
         if (change == CommDlgState.SelectionChanged)
+        {
             PollViewState();
+            SelectionChanged?.Invoke(this, EventArgs.Empty);
+        }
         else if (change == CommDlgState.SetFocus)
             ViewFocused?.Invoke(this, EventArgs.Empty);
     }
@@ -438,6 +586,7 @@ public sealed class ExplorerBrowserHost : Control
         _itemCount = _selectedCount = -1;
         NavigationCompleted?.Invoke(this, EventArgs.Empty);
         PollViewState();
+        SelectionChanged?.Invoke(this, EventArgs.Empty);
         RunQueuedNavigation();
     }
 

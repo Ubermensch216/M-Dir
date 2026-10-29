@@ -269,6 +269,21 @@ internal static partial class NativeMethods
     [LibraryImport("shlwapi.dll", EntryPoint = "StrRetToStrW")]
     public static partial int StrRetToStr(ref StrRet pstr, IntPtr pidl, out IntPtr ppsz);
 
+    [LibraryImport("shlwapi.dll", EntryPoint = "AssocQueryStringW", StringMarshalling = StringMarshalling.Utf16)]
+    public static unsafe partial int AssocQueryString(uint flags, uint str, string pszAssoc, string? pszExtra, char* pszOut, ref uint pcchOut);
+
+    [LibraryImport("ole32.dll")]
+    public static partial int CoCreateInstance(ref Guid rclsid, IntPtr pUnkOuter, uint dwClsContext, ref Guid riid, out IntPtr ppv);
+
+    [LibraryImport("shlwapi.dll", EntryPoint = "SHCreateStreamOnFileEx", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial int SHCreateStreamOnFileEx(string pszFile, uint grfMode, uint dwAttributes, [MarshalAs(UnmanagedType.Bool)] bool fCreate, IntPtr pstmTemplate, out IntPtr ppstm);
+
+    [LibraryImport("shell32.dll", EntryPoint = "SHCreateItemFromParsingName", StringMarshalling = StringMarshalling.Utf16)]
+    public static partial int SHCreateItemFromParsingName(string pszPath, IntPtr pbc, ref Guid riid, out IntPtr ppv);
+
+    [LibraryImport("shell32.dll", EntryPoint = "ExtractIconExW", StringMarshalling = StringMarshalling.Utf16)]
+    public static unsafe partial uint ExtractIconEx(string lpszFile, int nIconIndex, IntPtr* phiconLarge, IntPtr* phiconSmall, uint nIcons);
+
     [LibraryImport("shell32.dll")]
     public static partial int SHCreateItemFromIDList(IntPtr pidl, ref Guid riid, out IntPtr ppv);
 
@@ -289,6 +304,9 @@ internal static partial class NativeMethods
     public const uint LVM_GETBKCOLOR = 0x1000;
     public const uint LVM_SETBKCOLOR = 0x1001;
     public const uint LVM_GETITEMSTATE = 0x102C;
+    public const uint LVM_SETITEMSTATE = 0x102B;
+    public const uint LVM_EDITLABEL = 0x1076;
+    public const int LVIS_SELECTED = 0x2;
     public const uint LVM_SETTEXTBKCOLOR = 0x1026;
     public const int COLOR_WINDOW = 5;
     public const uint RDW_INVALIDATE = 0x1;
@@ -337,6 +355,7 @@ internal static partial class NativeMethods
     public const uint SHGFI_SMALLICON = 0x1;
     public const uint SHGFI_PIDL = 0x8;
     public const uint SHGFI_ICON = 0x100;
+    public const uint SHGFI_TYPENAME = 0x400;
 
     [LibraryImport("shell32.dll", EntryPoint = "SHGetFileInfoW")]
     public static partial IntPtr SHGetFileInfo(IntPtr pidl, uint dwFileAttributes, ref ShFileInfo psfi, uint cbFileInfo, uint uFlags);

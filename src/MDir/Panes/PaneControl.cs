@@ -99,6 +99,7 @@ internal sealed class PaneControl : Panel
             $"'{e.Location.DisplayName}' 위치를 열 수 없습니다.", "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         Browser.ItemsChanged += (_, _) => UpdateStatus();
         Browser.ViewFocused += (_, _) => ViewFocused?.Invoke(this, EventArgs.Empty);
+        Browser.SelectionChanged += (_, _) => SelectionChanged?.Invoke(this, EventArgs.Empty);
         _filterBar.FilterChanged += (_, _) => ApplyFilterFromBar();
         _filterBar.PatternCommitted += (_, pattern) => FilterCommitted?.Invoke(this, pattern);
         _filterBar.Dismissed += (_, _) => FocusBrowser();
@@ -118,8 +119,14 @@ internal sealed class PaneControl : Panel
     /// <summary>Raised when the pane's file list got keyboard focus (so the window can make this pane the active one).</summary>
     public event EventHandler? ViewFocused;
 
+    /// <summary>Raised when the pane's selection changed or the pane navigated (see <see cref="ExplorerBrowserHost.SelectionChanged"/>).</summary>
+    public event EventHandler? SelectionChanged;
+
     /// <summary>Raised with a filter pattern the user confirmed, to be remembered in the recent list.</summary>
     public event EventHandler<string>? FilterCommitted;
+
+    /// <summary>Raised when the favorites menu's "organize" command was chosen.</summary>
+    public event EventHandler? ManageFavoritesRequested;
 
     /// <summary>Zero-based pane number (0 = top-left).</summary>
     public int Index { get; }
@@ -171,6 +178,10 @@ internal sealed class PaneControl : Panel
     }
 
     internal FolderTreeControl? Tree => _tree;
+
+    /// <summary>The favorites shown by this pane's star button; null disables it.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal FavoritesStore? Favorites { get; set; }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal TreeOptions TreeOptions
@@ -485,13 +496,17 @@ internal sealed class PaneControl : Panel
         locations.DropDownOpening += (_, _) => FillLocationsMenu(locations);
         locations.DropDownItems.Add(new ToolStripMenuItem("…"));
 
+        var favorites = new ToolStripDropDownButton(Glyphs.Favorite) { Font = Glyphs.Font, ToolTipText = "즐겨찾기", ShowDropDownArrow = false };
+        favorites.DropDownOpening += (_, _) => FillFavoritesMenu(favorites);
+        favorites.DropDownItems.Add(new ToolStripMenuItem("…"));
+
         var refresh = Glyphs.CreateButton(Glyphs.Refresh, "새로 고침 (F5)", (_, _) => Browser.RefreshView());
         var viewDropDown = new ToolStripDropDownButton(Glyphs.ViewList) { Font = Glyphs.Font, ToolTipText = "보기" };
         foreach (ViewPreset preset in ViewPreset.All)
             viewDropDown.DropDownItems.Add(new ToolStripMenuItem(preset.Name, null, (_, _) => Browser.SetViewMode(preset.Mode, preset.IconSize)) { Font = Font });
 
         var right = new ToolStrip { GripStyle = ToolStripGripStyle.Hidden, Dock = DockStyle.Fill, CanOverflow = false };
-        right.Items.AddRange([locations, refresh, viewDropDown]);
+        right.Items.AddRange([favorites, locations, refresh, viewDropDown]);
 
         var bar = new TableLayoutPanel { Dock = DockStyle.Top, AutoSize = true, ColumnCount = 3, RowCount = 1 };
         bar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -501,6 +516,33 @@ internal sealed class PaneControl : Panel
         bar.Controls.Add(_address, 1, 0);
         bar.Controls.Add(right, 2, 0);
         return bar;
+    }
+
+    /// <summary>Rebuilt on every opening so favorites added elsewhere show up.</summary>
+    private void FillFavoritesMenu(ToolStripDropDownButton button)
+    {
+        FavoritesMenu.Clear(button.DropDownItems);
+        if (Favorites is not { } store)
+        {
+            button.DropDownItems.Add(new ToolStripMenuItem("즐겨찾기를 사용할 수 없습니다") { Enabled = false });
+            return;
+        }
+
+        var menu = new FavoritesMenu(store, () => Browser.CurrentLocation, OpenFavorite, () => ManageFavoritesRequested?.Invoke(this, EventArgs.Empty));
+        button.DropDownItems.AddRange(menu.CreateCommands());
+        button.DropDownItems.Add(new ToolStripSeparator());
+        menu.AddEntries(button.DropDownItems);
+    }
+
+    /// <summary>Opens a favorite here, or in a new tab (Ctrl+click, middle click).</summary>
+    internal void OpenFavorite(ShellLocation location, bool newTab)
+    {
+        if (newTab)
+            NewTab(location);
+        else
+            Browser.Navigate(location);
+
+        Browser.Focus();
     }
 
     /// <summary>Common folders and all drives, rebuilt on every opening so new drives show up.</summary>

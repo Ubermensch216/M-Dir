@@ -24,6 +24,9 @@ internal sealed class AppPaths
 
     public string SettingsFile => Path.Combine(DataDirectory, SettingsFileName);
 
+    /// <summary>Folder of favorite shortcuts (<c>.lnk</c>), with a "Quick-Link" subfolder.</summary>
+    public string FavoritesDirectory => Path.Combine(DataDirectory, "Favorites");
+
     /// <summary>Workspace saved when the program exits and restored at the next start.</summary>
     public string StartWorkspaceFile => Path.Combine(DataDirectory, StartWorkspaceFileName);
 
@@ -43,6 +46,7 @@ internal sealed class AppSettings
 {
     private const string StartSection = "Start";
     private const string ColorSection = "ColorFilter";
+    private const string ShortcutSection = "Shortcuts";
     private const string RecentSection = "RecentFilters";
     private const int MaxRecentFilters = 20;
 
@@ -57,6 +61,12 @@ internal sealed class AppSettings
 
     /// <summary>The colour rules (Q-Dir's colour filter), shared by every pane.</summary>
     public ColorRuleSet ColorRules { get; set; } = ColorRuleSet.CreateDefault();
+
+    /// <summary>The user's keyboard shortcut changes: command id to key text (empty = no shortcut).</summary>
+    public Dictionary<string, string> Shortcuts { get; } = new(StringComparer.Ordinal);
+
+    /// <summary>The toolbar under the menu is shown.</summary>
+    public bool ShowToolbar { get; set; } = true;
 
     /// <summary>File name filters typed before, newest first.</summary>
     public List<string> RecentFilters { get; } = [];
@@ -86,7 +96,11 @@ internal sealed class AppSettings
                 Tree = TreeOptions.Read(ini),
                 ColorFilterEnabled = ini.GetBool(ColorSection, "Enabled", true),
                 ColorRules = ColorRuleSet.Read(ini) ?? ColorRuleSet.CreateDefault(),
+                ShowToolbar = ini.GetBool(StartSection, nameof(ShowToolbar), true),
             };
+            foreach ((string id, string keys) in ini.Entries(ShortcutSection))
+                settings.Shortcuts[id] = keys;
+
             for (int i = 1; i <= MaxRecentFilters; i++)
             {
                 if (ini.Get(RecentSection, $"Filter{i}") is { Length: > 0 } filter)
@@ -106,6 +120,13 @@ internal sealed class AppSettings
     {
         var ini = IniFile.Load(path);
         ini.Set(StartSection, nameof(AutoWorkspace), AutoWorkspace);
+        ini.Set(StartSection, nameof(ShowToolbar), ShowToolbar);
+
+        // Only the changes are stored, so a default changed in a later version still reaches users who never touched it.
+        ini.RemoveSection(ShortcutSection);
+        foreach ((string id, string keys) in Shortcuts)
+            ini.Set(ShortcutSection, id, keys);
+
         Tree.Write(ini);
         ini.Set(ColorSection, "Enabled", ColorFilterEnabled);
         ColorRules.Write(ini);

@@ -108,6 +108,18 @@ public sealed class ShellLocation : IEquatable<ShellLocation>
         return FromPidl(pidl.Handle);
     }
 
+    /// <summary>The shell's description of this item's type ("텍스트 문서", "파일 폴더"), or null.</summary>
+    public unsafe string? GetTypeName()
+    {
+        using NativePidl pidl = ToNative();
+        var info = default(ShFileInfo);
+        if (NativeMethods.SHGetFileInfo(pidl.Handle, 0, ref info, (uint)sizeof(ShFileInfo), NativeMethods.SHGFI_PIDL | NativeMethods.SHGFI_TYPENAME) == 0)
+            return null;
+
+        string name = new string(info.TypeName);
+        return name.Length > 0 ? name : null;
+    }
+
     /// <summary>The shell's small icon for this location (folder, drive, virtual folder), or null.</summary>
     public unsafe Bitmap? GetSmallIcon()
     {

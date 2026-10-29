@@ -75,6 +75,9 @@ internal sealed class Workspace
     /// <summary>Tree width as a share of its pane or window, in 1/10000 (Q-Dir's default <c>Tree1split=2500</c>).</summary>
     public const int DefaultTreeSplit = 2500;
 
+    /// <summary>The preview takes 30% of the window by default.</summary>
+    public const int DefaultPreviewSplit = 3000;
+
     public PaneLayout Layout { get; init; } = PaneLayout.Default;
 
     /// <summary>One tree for the whole window, following the active pane, instead of one tree per pane.</summary>
@@ -83,6 +86,12 @@ internal sealed class Workspace
     public bool SharedTreeVisible { get; init; }
 
     public int SharedTreeSplit { get; init; } = DefaultTreeSplit;
+
+    /// <summary>The preview panel (F12) is shown.</summary>
+    public bool PreviewVisible { get; init; }
+
+    /// <summary>Preview panel width as a share of the window, in 1/10000.</summary>
+    public int PreviewSplit { get; init; } = DefaultPreviewSplit;
 
     /// <summary>Splitter ratios (1/10000) in the layout's pre-order, like Q-Dir's SP0/SP1/SP2.</summary>
     public IReadOnlyList<int> Ratios { get; init; } = PaneLayout.Default.DefaultRatios;
@@ -148,6 +157,8 @@ internal sealed class Workspace
             SharedTree = ini.GetInt(Main, "TreeMode", 0) == 1,
             SharedTreeVisible = ini.GetBool(Main, "SharedTree", false),
             SharedTreeSplit = Math.Clamp(ini.GetInt(Main, "SharedTreeSplit", DefaultTreeSplit), MinTreeSplit, MaxTreeSplit),
+            PreviewVisible = ini.GetBool(Main, "Preview", false),
+            PreviewSplit = Math.Clamp(ini.GetInt(Main, "PreviewSplit", DefaultPreviewSplit), MinTreeSplit, MaxTreeSplit),
             Window = WindowPlacement.TryParse(ini.Get(Main, "Window")),
             Panes = [.. Enumerable.Range(0, PaneLayout.MaxPanes).Select(i => ReadPane(ini, i, fallback))],
         };
@@ -164,6 +175,8 @@ internal sealed class Workspace
         ini.Set(Main, "TreeMode", SharedTree ? 1 : 0);
         ini.Set(Main, "SharedTree", SharedTreeVisible);
         ini.Set(Main, "SharedTreeSplit", SharedTreeSplit);
+        ini.Set(Main, "Preview", PreviewVisible);
+        ini.Set(Main, "PreviewSplit", PreviewSplit);
         if (Window is not null)
             ini.Set(Main, "Window", Window.ToString());
 
