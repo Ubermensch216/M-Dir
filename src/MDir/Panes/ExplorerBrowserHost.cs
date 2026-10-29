@@ -10,7 +10,7 @@ namespace MDir.Panes;
 /// </summary>
 public sealed class ExplorerBrowserHost : Control
 {
-    private readonly NavigationHistory<ShellLocation> _history = new();
+    private NavigationHistory<ShellLocation> _history = new();
     private readonly System.Windows.Forms.Timer _pollTimer = new() { Interval = 250 };
     private IExplorerBrowser? _browser;
     private EventSink? _sink;
@@ -19,16 +19,23 @@ public sealed class ExplorerBrowserHost : Control
     private IFolderView2? _folderView;
     private ShellLocation? _pendingLocation;
     private PendingNavigation _pending;
+    private (ShellLocation Location, PendingNavigation Kind)? _queued;
     private FolderViewMode _viewMode = FolderViewMode.Details;
     private int _iconSize = 16;
     private int _itemCount = -1;
     private int _selectedCount = -1;
+
+    /// <summary>HRESULT_FROM_WIN32(ERROR_BUSY).</summary>
+    private const int HResultBusy = unchecked((int)0x800700AA);
 
     private enum PendingNavigation
     {
         None,
         Back,
         Forward,
+
+        /// <summary>Showing a tab's current entry again: history stays as it is.</summary>
+        Restore,
     }
 
     public ExplorerBrowserHost()
@@ -106,6 +113,27 @@ public sealed class ExplorerBrowserHost : Control
     }
 
     public void RefreshView() => _view?.Refresh();
+
+    /// <summary>
+    /// Switches to another tab's state: its history object becomes the live one (later navigation updates it
+    /// in place) and the view shows its current entry with its view mode.
+    /// </summary>
+    internal void LoadState(NavigationHistory<ShellLocation> history, FolderViewMode mode, int iconSize)
+    {
+        _history = history;
+        _queued = null;
+        _viewMode = mode;
+        _iconSize = iconSize;
+        if (_browser is not null)
+        {
+            var settings = new FolderSettings { ViewMode = mode };
+            _browser.SetFolderSettings(ref settings);
+        }
+
+        ViewModeChanged?.Invoke(this, EventArgs.Empty);
+        if (history.Current is { } location)
+            BrowseTo(location, PendingNavigation.Restore);
+    }
 
     internal void SetViewMode(FolderViewMode mode, int iconSize)
     {
@@ -272,14 +300,32 @@ public sealed class ExplorerBrowserHost : Control
             return;
         }
 
+        PendingNavigation previous = _pending;
         _pending = kind;
         using NativePidl pidl = location.ToNative();
         int hr = _browser.BrowseToIDList(pidl.Handle, SbspFlags.Absolute);
-        if (hr < 0)
+        if (hr == HResultBusy)
+        {
+            // The browser refuses a second navigation while one is in flight (e.g. right after a tab switch).
+            // Keep the newest request and run it when the current one finishes.
+            _pending = previous;
+            _queued = (location, kind);
+        }
+        else if (hr < 0)
         {
             _pending = PendingNavigation.None;
             NavigationFailed?.Invoke(this, new NavigationFailedEventArgs(location));
         }
+    }
+
+    /// <summary>Starts the navigation that arrived while the previous one was pending.</summary>
+    private void RunQueuedNavigation()
+    {
+        if (_queued is not var (location, kind) || !IsHandleCreated)
+            return;
+
+        _queued = null;
+        BeginInvoke(() => BrowseTo(location, kind));
     }
 
     private void OnViewCreated(object view)
@@ -300,6 +346,8 @@ public sealed class ExplorerBrowserHost : Control
             case PendingNavigation.Forward when _history.CanGoForward:
                 _history.MoveForward();
                 break;
+            case PendingNavigation.Restore when _history.Current is not null:
+                break;
             default:
                 _history.Visit(location);
                 break;
@@ -309,12 +357,14 @@ public sealed class ExplorerBrowserHost : Control
         _itemCount = _selectedCount = -1;
         NavigationCompleted?.Invoke(this, EventArgs.Empty);
         PollViewState();
+        RunQueuedNavigation();
     }
 
     private void OnNavigationFailed(IntPtr pidl)
     {
         _pending = PendingNavigation.None;
         NavigationFailed?.Invoke(this, new NavigationFailedEventArgs(ShellLocation.FromPidl(pidl)));
+        RunQueuedNavigation();
     }
 
     // Stopgap until ICommDlgBrowser (stage 6, needed for IncludeObject filtering) provides OnStateChange:
@@ -333,7 +383,9 @@ public sealed class ExplorerBrowserHost : Control
             ItemsChanged?.Invoke(this, EventArgs.Empty);
         }
 
-        if (_folderView.GetViewModeAndIconSize(out FolderViewMode mode, out int size) >= 0
+        // While a tab switch is loading, the old view still reports the previous tab's mode.
+        if (_pending != PendingNavigation.Restore
+            && _folderView.GetViewModeAndIconSize(out FolderViewMode mode, out int size) >= 0
             && (mode != _viewMode || size != _iconSize))
         {
             _viewMode = mode;

@@ -5,6 +5,27 @@ namespace MDir.Tests;
 public class NavigationHistoryTests
 {
     [Fact]
+    public void Clone_CopiesEntriesButNotFutureChanges()
+    {
+        var history = new NavigationHistory<string>();
+        history.Visit("a");
+        history.Visit("b");
+        history.Visit("c");
+        history.MoveBack();
+
+        NavigationHistory<string> copy = history.Clone();
+        copy.Visit("x");
+
+        Assert.Equal("b", history.Current);
+        Assert.Equal("c", history.PeekForward());
+        Assert.Equal("x", copy.Current);
+        Assert.False(copy.CanGoForward);
+        copy.MoveBack();
+        Assert.Equal("b", copy.Current);
+        Assert.Equal("a", copy.PeekBack());
+    }
+
+    [Fact]
     public void Visit_TracksBackHistoryAndClearsForward()
     {
         var history = new NavigationHistory<string>();

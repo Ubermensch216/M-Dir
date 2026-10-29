@@ -1,7 +1,7 @@
 namespace MDir.Panes;
 
 /// <summary>
-/// Back/forward history kept by each pane (and later each tab) instead of the Explorer
+/// Back/forward history kept by each tab instead of the Explorer
 /// browser's own travel log, so it survives the browser instance being recreated.
 /// </summary>
 public sealed class NavigationHistory<T> where T : class
@@ -38,6 +38,15 @@ public sealed class NavigationHistory<T> where T : class
 
         _forward.Clear();
         Current = entry;
+    }
+
+    /// <summary>Independent copy (entries are shared, lists are not), used when a tab is duplicated.</summary>
+    public NavigationHistory<T> Clone()
+    {
+        var copy = new NavigationHistory<T>(Capacity) { Current = Current };
+        copy._back.AddRange(_back);
+        copy._forward.AddRange(_forward);
+        return copy;
     }
 
     public void MoveBack()

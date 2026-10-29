@@ -141,6 +141,20 @@ internal sealed class MainForm : Form, IMessageFilter
             return true;
         }
 
+        // Alternative tab keys: Q-Dir's Ctrl+Alt+A for a new tab, and Ctrl+PageDown/PageUp to switch.
+        switch (keyData)
+        {
+            case Keys.Control | Keys.Alt | Keys.A:
+                NewTab();
+                return true;
+            case Keys.Control | Keys.PageDown:
+                _activePane.SelectNextTab(1);
+                return true;
+            case Keys.Control | Keys.PageUp:
+                _activePane.SelectNextTab(-1);
+                return true;
+        }
+
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
@@ -190,9 +204,33 @@ internal sealed class MainForm : Form, IMessageFilter
             layout.DropDownItems.Add(_paneMenus[i]);
         }
 
+        var tabs = new ToolStripMenuItem("탭(&T)");
+        tabs.DropDownItems.Add(new ToolStripMenuItem("새 탭(&N)", null, (_, _) => NewTab(), Keys.Control | Keys.T));
+        tabs.DropDownItems.Add(new ToolStripMenuItem("탭 복제(&D)", null, (_, _) => _activePane.DuplicateTab()));
+        tabs.DropDownItems.Add(new ToolStripMenuItem("탭 닫기(&C)", null, (_, _) => _activePane.CloseTab(_activePane.SelectedTab),
+            Keys.Control | Keys.W));
+        tabs.DropDownItems.Add(new ToolStripSeparator());
+        tabs.DropDownItems.Add(new ToolStripMenuItem("다음 탭", null, (_, _) => _activePane.SelectNextTab(1), Keys.Control | Keys.Tab));
+        tabs.DropDownItems.Add(new ToolStripMenuItem("이전 탭", null, (_, _) => _activePane.SelectNextTab(-1),
+            Keys.Control | Keys.Shift | Keys.Tab));
+        tabs.DropDownItems.Add(new ToolStripSeparator());
+        var multiline = new ToolStripMenuItem("여러 줄 탭(&M)") { CheckOnClick = true };
+        multiline.CheckedChanged += (_, _) =>
+        {
+            foreach (PaneControl pane in _panes)
+                pane.MultilineTabs = multiline.Checked;
+        };
+        tabs.DropDownItems.Add(multiline);
+
         var menu = new MenuStrip { Dock = DockStyle.Top };
-        menu.Items.AddRange([file, view, go, layout]);
+        menu.Items.AddRange([file, view, go, tabs, layout]);
         return menu;
+    }
+
+    private void NewTab()
+    {
+        _activePane.NewTab();
+        _activePane.FocusBrowser();
     }
 
     private void ActivatePane(PaneControl pane, bool focus)

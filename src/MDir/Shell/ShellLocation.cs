@@ -11,6 +11,7 @@ public sealed class ShellLocation : IEquatable<ShellLocation>
 {
     private readonly byte[] _idList;
     private string? _displayName;
+    private string? _name;
 
     private ShellLocation(byte[] idList) => _idList = idList;
 
@@ -25,6 +26,9 @@ public sealed class ShellLocation : IEquatable<ShellLocation>
     public string DisplayName => _displayName ??= GetName(Sigdn.FileSysPath) ?? GetName(Sigdn.DesktopAbsoluteEditing) ?? string.Empty;
 
     public string? FileSystemPath => GetName(Sigdn.FileSysPath);
+
+    /// <summary>Short localized name as Explorer shows it ("Windows", "로컬 디스크 (C:)").</summary>
+    public string Name => _name ??= GetName(Sigdn.NormalDisplay) ?? DisplayName;
 
     /// <summary>Parses a path, "shell:" folder or environment-variable string. Returns null when it doesn't resolve.</summary>
     public static ShellLocation? Parse(string text)
@@ -64,6 +68,26 @@ public sealed class ShellLocation : IEquatable<ShellLocation>
         using NativePidl pidl = ToNative();
         NativeMethods.ILRemoveLastID(pidl.Handle);
         return FromPidl(pidl.Handle);
+    }
+
+    /// <summary>The shell's small icon for this location (folder, drive, virtual folder), or null.</summary>
+    public unsafe Bitmap? GetSmallIcon()
+    {
+        using NativePidl pidl = ToNative();
+        var info = default(ShFileInfo);
+        if (NativeMethods.SHGetFileInfo(pidl.Handle, 0, ref info, (uint)sizeof(ShFileInfo),
+                NativeMethods.SHGFI_PIDL | NativeMethods.SHGFI_ICON | NativeMethods.SHGFI_SMALLICON) == 0 || info.Icon == IntPtr.Zero)
+            return null;
+
+        try
+        {
+            using Icon icon = Icon.FromHandle(info.Icon);
+            return icon.ToBitmap();
+        }
+        finally
+        {
+            NativeMethods.DestroyIcon(info.Icon);
+        }
     }
 
     /// <summary>Allocates a CoTaskMem copy for APIs that take a PIDL.</summary>

@@ -94,6 +94,17 @@ internal struct NativeMsg
     public uint Private;
 }
 
+/// <summary>SHFILEINFOW.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct ShFileInfo
+{
+    public IntPtr Icon;
+    public int IconIndex;
+    public uint Attributes;
+    public fixed char DisplayName[260];
+    public fixed char TypeName[80];
+}
+
 [ComImport]
 [Guid("71F96385-DDD6-48D3-A0C1-AE06E8B055FB")]
 [ClassInterface(ClassInterfaceType.None)]
@@ -234,6 +245,17 @@ internal static partial class NativeMethods
 
     [LibraryImport("shlwapi.dll")]
     public static partial int SHAutoComplete(IntPtr hwndEdit, uint dwFlags);
+
+    public const uint SHGFI_SMALLICON = 0x1;
+    public const uint SHGFI_PIDL = 0x8;
+    public const uint SHGFI_ICON = 0x100;
+
+    [LibraryImport("shell32.dll", EntryPoint = "SHGetFileInfoW")]
+    public static partial IntPtr SHGetFileInfo(IntPtr pidl, uint dwFileAttributes, ref ShFileInfo psfi, uint cbFileInfo, uint uFlags);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DestroyIcon(IntPtr hIcon);
 
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetFocus();
