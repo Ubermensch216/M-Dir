@@ -35,7 +35,7 @@ internal sealed class Command(string id, string text, Action execute)
     public string? Glyph { get; init; }
 
     /// <summary>The text without the access key marker, for dialogs and tooltips.</summary>
-    public string DisplayText => Text.Replace("&", string.Empty).Replace("...", string.Empty).TrimEnd();
+    public string DisplayText => System.Text.RegularExpressions.Regex.Replace(Text, @"\(&.\)", string.Empty).Replace("&", string.Empty).Replace("...", string.Empty).Trim();
 
     public bool IsEnabled => CanExecute?.Invoke() ?? true;
 }

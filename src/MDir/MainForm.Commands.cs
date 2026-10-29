@@ -340,6 +340,7 @@ internal sealed partial class MainForm
     private ToolStrip BuildToolbar()
     {
         var toolbar = new ToolStrip { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, CanOverflow = true, Visible = Settings.ShowToolbar };
+        var toolbarTips = new List<(Command, ToolStripButton)>();
         void Button(string id)
         {
             Command command = _commands.Get(id);
@@ -351,6 +352,7 @@ internal sealed partial class MainForm
             };
             button.Click += (_, _) => Run(command);
             toolbar.Items.Add(button);
+            toolbarTips.Add((command, button));
             _toolbarItems.Add((command, button));
         }
 
@@ -377,6 +379,10 @@ internal sealed partial class MainForm
 
         layouts.DropDownOpening += (_, _) => RefreshMenuItems(layouts.DropDownItems);
         toolbar.Items.Add(layouts);
+
+        // Tooltips show the name and the current shortcut; refreshed when the toolbar is rebuilt after a shortcut change.
+        foreach ((Command command, ToolStripButton button) in toolbarTips)
+            button.ToolTipText = _commands.ShortcutText(command) is { Length: > 0 } key ? $"{command.DisplayText} ({key})" : command.DisplayText;
 
         _toolbar = toolbar;
         return toolbar;
@@ -605,6 +611,8 @@ internal sealed partial class MainForm
 
         SaveSettings();
         RefreshAllMenus();
+        foreach ((Command command, ToolStripItem item) in _toolbarItems)
+            item.ToolTipText = _commands.ShortcutText(command) is { Length: > 0 } key ? $"{command.DisplayText} ({key})" : command.DisplayText;
     }
 }
 

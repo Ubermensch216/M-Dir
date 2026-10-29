@@ -138,7 +138,8 @@ public class CommandRegistryTests
         Assert.False(command.IsEnabled);
         allowed = true;
         Assert.True(command.IsEnabled);
-        Assert.Equal("새 폴더(N)", command.DisplayText);
+        Assert.Equal("새 폴더", command.DisplayText);
+        Assert.Equal("Copy", new Command("c", "&Copy", () => { }).DisplayText);
         Assert.True(Make("y").IsEnabled);
     }
 }
