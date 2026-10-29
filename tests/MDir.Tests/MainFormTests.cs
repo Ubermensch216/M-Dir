@@ -19,10 +19,13 @@ public class MainFormTests(ITestOutputHelper output)
             await WaitUntil(() => IsAt(form.Panes[0], WindowsDir), "pane 1 opened the start folder");
             await WaitUntil(() => form.Panes[1].Browser.CurrentLocation is not null, "pane 2 browsed");
             Assert.False(form.Panes[3].Visible);
-            Assert.Null(form.Panes[3].Browser.CurrentLocation);
+
+            // The folder is known from the workspace, but no shell view exists until the pane is first shown.
+            Assert.NotNull(form.Panes[3].Browser.CurrentLocation);
+            Assert.False(form.Panes[3].Browser.IsHandleCreated);
 
             form.LayoutPanel.CurrentLayout = PaneLayout.Default;
-            await WaitUntil(() => form.Panes[3].Browser.CurrentLocation is not null, "pane 4 browsed once shown");
+            await WaitUntil(() => form.Panes[3].Browser.IsHandleCreated && form.Panes[3].Browser.ItemCount > 0, "pane 4 browsed once shown");
             await WaitUntil(() => form.Panes.All(pane => pane.Browser.ItemCount > 0), "all panes enumerated");
 
             output.WriteLine($"Screenshot: {SaveScreenshot(form, "main-form-grid.png")}");

@@ -60,6 +60,44 @@ public sealed class ShellLocation : IEquatable<ShellLocation>
 
     public static ShellLocation FromIdList(ReadOnlySpan<byte> idList) => new(idList.ToArray());
 
+    /// <summary>For bytes read from a file: null unless they form a complete, terminated ITEMIDLIST.</summary>
+    public static ShellLocation? TryFromIdList(ReadOnlySpan<byte> idList) => IsWellFormed(idList) ? FromIdList(idList) : null;
+
+    private static bool IsWellFormed(ReadOnlySpan<byte> idList)
+    {
+        int offset = 0;
+        while (offset + 2 <= idList.Length)
+        {
+            int size = idList[offset] | (idList[offset + 1] << 8);
+            if (size == 0)
+                return offset + 2 == idList.Length;
+            if (size < 2)
+                return false;
+
+            offset += size;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// This location, or its nearest parent that still exists, so a restored workspace never points at a deleted
+    /// folder. Virtual folders and network paths are trusted (checking them can block for a long time).
+    /// </summary>
+    public ShellLocation ExistingOrParent()
+    {
+        ShellLocation location = this;
+        while (location.FileSystemPath is { } path && !path.StartsWith(@"\\", StringComparison.Ordinal)
+            && !Directory.Exists(path) && !File.Exists(path))
+        {
+            location = location.GetParent() ?? Desktop;
+            if (location.IsDesktop)
+                break;
+        }
+
+        return location;
+    }
+
     public ShellLocation? GetParent()
     {
         if (IsDesktop)

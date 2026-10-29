@@ -1,18 +1,25 @@
 using MDir.Layout;
 using MDir.Panes;
+using MDir.Settings;
 using MDir.Shell;
 
 namespace MDir;
 
 /// <summary>
 /// Main window: up to four Explorer panes arranged by a <see cref="PaneLayout"/>. Menu commands act on the
-/// active pane, which is chosen by clicking into a pane or with F6 / Ctrl+Alt+1~4.
+/// active pane, which is chosen by clicking into a pane or with F6 / Ctrl+Alt+1~4. The whole arrangement is a
+/// <see cref="Workspace"/> that can be saved, opened and (with a profile) restored automatically.
 /// </summary>
 internal sealed class MainForm : Form, IMessageFilter
 {
+    private const string WorkspaceFilter = "M-Dir 작업 공간 (*.mdr)|*.mdr|모든 파일 (*.*)|*.*";
+
     private readonly PaneControl[] _panes;
     private readonly PaneLayoutPanel _layoutPanel;
-    private readonly ShellLocation[] _startLocations;
+    private readonly AppProfile? _profile;
+    private ToolStripMenuItem _multilineMenu = null!;
+    private ToolStripMenuItem _autoWorkspaceMenu = null!;
+    private string? _workspacePath;
     private readonly ToolStripMenuItem _backMenu;
     private readonly ToolStripMenuItem _forwardMenu;
     private readonly ToolStripMenuItem _upMenu;
@@ -21,21 +28,17 @@ internal sealed class MainForm : Form, IMessageFilter
     private readonly List<(PaneLayout Layout, ToolStripMenuItem Item)> _layoutItems = [];
     private PaneControl _activePane;
 
-    public MainForm(ShellLocation startLocation)
+    /// <param name="startFolder">A folder from the command line: shown in pane 1 (the default workspace's first pane when there is no saved one).</param>
+    /// <param name="workspace">Workspace to open; null starts the default four-pane layout.</param>
+    /// <param name="workspacePath">The file <paramref name="workspace"/> came from, so Ctrl+S saves back to it.</param>
+    /// <param name="profile">Settings and file locations; null turns automatic saving off (used by tests).</param>
+    public MainForm(ShellLocation? startFolder = null, Workspace? workspace = null, string? workspacePath = null, AppProfile? profile = null)
     {
         Text = "M-Dir";
         Size = new Size(1280, 860);
         StartPosition = FormStartPosition.CenterScreen;
-
-        // Pane 1 opens the requested folder; the others start at common folders.
-        _startLocations =
-        [
-            startLocation,
-            ShellLocation.Parse("shell:Personal") ?? startLocation,
-            ShellLocation.Parse("shell:Downloads") ?? startLocation,
-            // "shell:Desktop" is the namespace root; the folder with the desktop's files is DesktopDirectory.
-            ShellLocation.Parse(Environment.GetFolderPath(Environment.SpecialFolder.DesktopDirectory)) ?? startLocation,
-        ];
+        _profile = profile;
+        _workspacePath = workspacePath;
 
         _panes = [.. Enumerable.Range(0, PaneLayout.MaxPanes).Select(i => new PaneControl(i))];
         _activePane = _panes[0];
@@ -63,8 +66,73 @@ internal sealed class MainForm : Form, IMessageFilter
         MainMenuStrip = menu;
         _layoutPanel.BringToFront();
 
+        ApplyWorkspace(workspace ?? Workspace.CreateDefault(startFolder ?? Workspace.DefaultLocation), applyWindow: true);
+        if (workspace is not null && startFolder is not null)
+        {
+            // Opened with a folder (shell "open with" or the command line): show it in pane 1.
+            _panes[0].Browser.Navigate(startFolder);
+            ActivatePane(_panes[0], focus: false);
+        }
+
         OnPaneLayoutChanged();
         UpdateActivePaneState();
+    }
+
+    internal string? WorkspacePath => _workspacePath;
+
+    /// <summary>The current arrangement, ready to save.</summary>
+    internal Workspace CaptureWorkspace()
+    {
+        // RestoreBounds is only filled in once the window has been moved or resized (a freshly centered window
+        // reports -1,-1), so it is used just for the maximized case, where Bounds is the whole screen.
+        Rectangle bounds = WindowState == FormWindowState.Normal ? Bounds : RestoreBounds;
+        return new Workspace
+        {
+            Layout = _layoutPanel.CurrentLayout,
+            Ratios = [.. _layoutPanel.Ratios],
+            ActivePane = _activePane.Index,
+            MultilineTabs = _multilineMenu.Checked,
+            Window = new WindowPlacement(bounds.X, bounds.Y, bounds.Width, bounds.Height, WindowState == FormWindowState.Maximized),
+            Panes = [.. _panes.Select(pane => pane.CaptureState())],
+        };
+    }
+
+    /// <summary>
+    /// Replaces layout, tabs and active pane with <paramref name="workspace"/>. The window position is only
+    /// applied at startup; opening a workspace file later leaves the window where the user put it.
+    /// </summary>
+    internal void ApplyWorkspace(Workspace workspace, bool applyWindow)
+    {
+        _layoutPanel.Restore(workspace.Layout, workspace.Ratios);
+        for (int i = 0; i < _panes.Length; i++)
+            _panes[i].ApplyState(workspace.Panes[i]);
+
+        _multilineMenu.Checked = workspace.MultilineTabs;
+        if (applyWindow && workspace.Window is { } window)
+            ApplyWindowPlacement(window);
+
+        int active = _layoutPanel.IsPaneVisible(workspace.ActivePane) ? workspace.ActivePane : 0;
+        ActivatePane(_panes[active], focus: false);
+        OnPaneLayoutChanged();
+        UpdateActivePaneState();
+    }
+
+    private void ApplyWindowPlacement(WindowPlacement window)
+    {
+        // A monitor may have been unplugged since the last run: only restore a position that is still on screen.
+        var bounds = new Rectangle(window.X, window.Y, window.Width, window.Height);
+        bool onScreen = Screen.AllScreens.Any(screen =>
+        {
+            Rectangle overlap = Rectangle.Intersect(screen.WorkingArea, bounds);
+            return overlap.Width >= 100 && overlap.Height >= 50;
+        });
+        if (!onScreen)
+            return;
+
+        StartPosition = FormStartPosition.Manual;
+        Bounds = bounds;
+        if (window.Maximized)
+            WindowState = FormWindowState.Maximized;
     }
 
     internal PaneLayoutPanel LayoutPanel => _layoutPanel;
@@ -125,11 +193,24 @@ internal sealed class MainForm : Form, IMessageFilter
     {
         base.OnShown(e);
 
-        // Hidden panes keep the location pending and browse when the layout first shows them.
-        for (int i = 0; i < _panes.Length; i++)
-            _panes[i].Browser.Navigate(_startLocations[i]);
-
+        // Each pane's folder was set by ApplyWorkspace; its shell view browses there when the pane is first shown.
         _activePane.FocusBrowser();
+    }
+
+    protected override void OnFormClosing(FormClosingEventArgs e)
+    {
+        base.OnFormClosing(e);
+        if (!e.Cancel && _profile is { Settings.AutoWorkspace: true })
+        {
+            try
+            {
+                CaptureWorkspace().Save(_profile.Paths.StartWorkspaceFile);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // Closing must not fail because the profile folder is read-only; the next start uses the old file.
+            }
+        }
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
@@ -161,6 +242,20 @@ internal sealed class MainForm : Form, IMessageFilter
     private MenuStrip BuildMenu()
     {
         var file = new ToolStripMenuItem("파일(&F)");
+        file.DropDownItems.Add(new ToolStripMenuItem("새 작업 공간(&N)", null, (_, _) => NewWorkspace(), Keys.Control | Keys.N));
+        file.DropDownItems.Add(new ToolStripMenuItem("작업 공간 열기(&O)...", null, (_, _) => OpenWorkspace(), Keys.Control | Keys.O));
+        file.DropDownItems.Add(new ToolStripMenuItem("작업 공간 저장(&S)", null, (_, _) => SaveWorkspace(), Keys.Control | Keys.S));
+        file.DropDownItems.Add(new ToolStripMenuItem("다른 이름으로 저장(&A)...", null, (_, _) => SaveWorkspaceAs()));
+        file.DropDownItems.Add(new ToolStripSeparator());
+        _autoWorkspaceMenu = new ToolStripMenuItem("종료 시 저장, 시작 시 복원(&W)")
+        {
+            CheckOnClick = true,
+            Checked = _profile?.Settings.AutoWorkspace ?? false,
+            Enabled = _profile is not null,
+        };
+        _autoWorkspaceMenu.CheckedChanged += (_, _) => SetAutoWorkspace(_autoWorkspaceMenu.Checked);
+        file.DropDownItems.Add(_autoWorkspaceMenu);
+        file.DropDownItems.Add(new ToolStripSeparator());
         file.DropDownItems.Add(new ToolStripMenuItem("끝내기(&X)", null, (_, _) => Close(), Keys.Alt | Keys.F4));
 
         var view = new ToolStripMenuItem("보기(&V)");
@@ -214,13 +309,13 @@ internal sealed class MainForm : Form, IMessageFilter
         tabs.DropDownItems.Add(new ToolStripMenuItem("이전 탭", null, (_, _) => _activePane.SelectNextTab(-1),
             Keys.Control | Keys.Shift | Keys.Tab));
         tabs.DropDownItems.Add(new ToolStripSeparator());
-        var multiline = new ToolStripMenuItem("여러 줄 탭(&M)") { CheckOnClick = true };
-        multiline.CheckedChanged += (_, _) =>
+        _multilineMenu = new ToolStripMenuItem("여러 줄 탭(&M)") { CheckOnClick = true };
+        _multilineMenu.CheckedChanged += (_, _) =>
         {
             foreach (PaneControl pane in _panes)
-                pane.MultilineTabs = multiline.Checked;
+                pane.MultilineTabs = _multilineMenu.Checked;
         };
-        tabs.DropDownItems.Add(multiline);
+        tabs.DropDownItems.Add(_multilineMenu);
 
         var menu = new MenuStrip { Dock = DockStyle.Top };
         menu.Items.AddRange([file, view, go, tabs, layout]);
@@ -231,6 +326,84 @@ internal sealed class MainForm : Form, IMessageFilter
     {
         _activePane.NewTab();
         _activePane.FocusBrowser();
+    }
+
+    private void NewWorkspace()
+    {
+        ApplyWorkspace(Workspace.CreateDefault(Workspace.DefaultLocation), applyWindow: false);
+        _workspacePath = null;
+        _activePane.FocusBrowser();
+    }
+
+    private void OpenWorkspace()
+    {
+        using var dialog = new OpenFileDialog { Title = "작업 공간 열기", Filter = WorkspaceFilter, DefaultExt = "mdr" };
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        if (Workspace.Load(dialog.FileName) is not { } workspace)
+        {
+            MessageBox.Show(this, $"'{dialog.FileName}' 파일은 M-Dir 작업 공간이 아니거나 읽을 수 없습니다.", "M-Dir",
+                MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return;
+        }
+
+        ApplyWorkspace(workspace, applyWindow: false);
+        _workspacePath = dialog.FileName;
+        _activePane.FocusBrowser();
+    }
+
+    private void SaveWorkspace()
+    {
+        if (_workspacePath is null)
+            SaveWorkspaceAs();
+        else
+            WriteWorkspace(_workspacePath);
+    }
+
+    private void SaveWorkspaceAs()
+    {
+        using var dialog = new SaveFileDialog
+        {
+            Title = "작업 공간 저장",
+            Filter = WorkspaceFilter,
+            DefaultExt = "mdr",
+            AddExtension = true,
+            FileName = _workspacePath is null ? "workspace.mdr" : Path.GetFileName(_workspacePath),
+            InitialDirectory = _workspacePath is null ? _profile?.Paths.DataDirectory ?? string.Empty : Path.GetDirectoryName(_workspacePath) ?? string.Empty,
+        };
+        if (dialog.ShowDialog(this) == DialogResult.OK && WriteWorkspace(dialog.FileName))
+            _workspacePath = dialog.FileName;
+    }
+
+    private bool WriteWorkspace(string path)
+    {
+        try
+        {
+            CaptureWorkspace().Save(path);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"작업 공간을 저장하지 못했습니다.\n{ex.Message}", "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            return false;
+        }
+    }
+
+    private void SetAutoWorkspace(bool enabled)
+    {
+        if (_profile is null)
+            return;
+
+        _profile.Settings.AutoWorkspace = enabled;
+        try
+        {
+            _profile.SaveSettings();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            MessageBox.Show(this, $"설정을 저장하지 못했습니다.\n{ex.Message}", "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
     }
 
     private void ActivatePane(PaneControl pane, bool focus)

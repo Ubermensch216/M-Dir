@@ -64,6 +64,26 @@ public sealed class PaneLayoutPanel : Control
 
     public bool IsPaneVisible(int index) => index < _layout.PaneCount;
 
+    /// <summary>
+    /// Switches to <paramref name="layout"/> with the given splitter positions (a saved workspace). Ratios of the
+    /// wrong count are ignored in favour of the layout's defaults.
+    /// </summary>
+    public void Restore(PaneLayout layout, IReadOnlyList<int> ratios)
+    {
+        bool layoutChanged = layout != _layout;
+        _layout = layout;
+        _ratios = ratios.Count == layout.SplitterCount
+            ? [.. ratios.Select(ratio => Math.Clamp(ratio, 0, PaneLayout.RatioScale))]
+            : [.. layout.DefaultRatios];
+        _drag = null;
+        ApplyVisibility();
+        PerformLayout();
+        Invalidate();
+        if (layoutChanged)
+            LayoutChanged?.Invoke(this, EventArgs.Empty);
+        RatiosChanged?.Invoke(this, EventArgs.Empty);
+    }
+
     public void SetRatio(int splitter, int ratio)
     {
         ratio = Math.Clamp(ratio, 0, PaneLayout.RatioScale);

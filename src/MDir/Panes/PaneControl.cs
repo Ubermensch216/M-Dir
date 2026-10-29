@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MDir.Settings;
 using MDir.Shell;
 
 namespace MDir.Panes;
@@ -120,6 +121,49 @@ internal sealed class PaneControl : Panel
     {
         get => _tabStrip.Multiline;
         set => _tabStrip.Multiline = value;
+    }
+
+    /// <summary>Snapshot for saving: every tab's folder and view mode, and which tab is selected.</summary>
+    public PaneState CaptureState()
+    {
+        // The selected tab's mode may have been changed from the shell's own menus since the last poll.
+        if (Browser.IsHandleCreated)
+        {
+            _currentTab.ViewMode = Browser.ViewMode;
+            _currentTab.IconSize = Browser.IconSize;
+        }
+
+        ShellLocation fallback = Workspace.DefaultLocation;
+        return new PaneState(
+            [.. Tabs.Select(tab => new TabState(tab.Location ?? fallback, tab.ViewMode, tab.IconSize))],
+            _tabStrip.SelectedIndex);
+    }
+
+    /// <summary>
+    /// Replaces all tabs with a saved pane. Folders that no longer exist fall back to their nearest existing
+    /// parent. The view opens the selected tab once, however many tabs were replaced.
+    /// </summary>
+    public void ApplyState(PaneState state)
+    {
+        List<PaneTab> tabs =
+        [
+            .. state.Tabs.Select(tab => new PaneTab(tab.Location.ExistingOrParent())
+            {
+                ViewMode = tab.ViewMode,
+                IconSize = tab.IconSize,
+            }),
+        ];
+        if (tabs.Count == 0)
+            tabs.Add(new PaneTab(Workspace.DefaultLocation));
+
+        List<PaneTab> old = [.. Tabs];
+        _tabStrip.Replace(tabs, state.SelectedTab);
+        _currentTab = _tabStrip.SelectedTab!;
+        Browser.LoadState(_currentTab.History, _currentTab.ViewMode, _currentTab.IconSize);
+        foreach (PaneTab tab in old)
+            tab.Dispose();
+
+        UpdateNavigationState();
     }
 
     public void FocusAddressBar()

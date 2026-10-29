@@ -118,6 +118,20 @@ internal sealed class PaneTabStrip : Control
 
     internal Rectangle OverflowButtonBounds => _overflowButton;
 
+    /// <summary>
+    /// Swaps the whole tab list without raising <see cref="SelectedIndexChanged"/>; the caller reloads its view.
+    /// The old tabs are not disposed here.
+    /// </summary>
+    public void Replace(IReadOnlyList<PaneTab> tabs, int selectedIndex)
+    {
+        _tabs.Clear();
+        _tabs.AddRange(tabs);
+        _selectedIndex = _tabs.Count == 0 ? -1 : Math.Clamp(selectedIndex, 0, _tabs.Count - 1);
+        _hotIndex = _pressedIndex = -1;
+        _firstVisible = 0;
+        RefreshTabs();
+    }
+
     public void Insert(int index, PaneTab tab)
     {
         _tabs.Insert(index, tab);
