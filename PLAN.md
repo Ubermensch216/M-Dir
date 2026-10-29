@@ -263,6 +263,7 @@ windowplacement=x;y;w;h|sw=1
 |---|---|---|
 | 0단계 | ✅ 완료 (2026-10-28) | `MDir.slnx`, `src/MDir`(WinForms, .NET 10, 실행 파일 `M-Dir.exe`), `tests/MDir.Tests`(xUnit) |
 | 1단계 | ✅ 완료 (2026-10-28) | `ExplorerBrowserHost`(IExplorerBrowser 호스팅), 자체 탐색 기록, 패널 단위 보기 모드, 키보드 라우팅(화살표·Tab·Backspace·셸 단축키), 마우스 뒤로/앞으로 버튼, 주소창 자동 완성. 테스트 14개 통과(통합 테스트 3개는 실제 셸 뷰로 검증) |
+| 5단계 | ✅ 완료 (2026-10-29), 들여쓰기 옵션 제외 | `FolderTreeControl`(셸 `INameSpaceTreeControl2` 호스팅, 바탕 화면 루트), 패널별 트리(`PaneControl`, 분할선 드래그)와 공용 트리(`MainForm`, 활성 패널을 따라감), 목록↔트리 양방향 동기화, 트리 옵션 4종(연결선·전체 행 선택·한 번 클릭 펼침·현재 폴더 자동 펼침, `M-Dir.ini`의 `[Tree]`), 트리 상태 작업 공간 저장·복원. 보기 메뉴 + F9. 테스트 108개 통과 |
 | 4단계 | ⚠️ 일부 완료 (2026-10-29) | 완료: `IniFile`(UTF-16, 원자적 저장), `AppPaths`(포터블 `M-Dir.ini` 감지 / `%APPDATA%\M-Dir`), `AppSettings`, `Workspace`(`.mdr`: 레이아웃·분할 비율·패널별 탭 PIDL·보기 모드·활성 패널·창 위치), `start.mdr` 자동 저장/복원, 파일 메뉴(새로 만들기 Ctrl+N / 열기 Ctrl+O / 저장 Ctrl+S / 다른 이름으로), 명령줄 `.mdr`·폴더 인자. **미완료: 패널별 열·정렬 저장, Q-Dir `.qdr` 가져오기, 트리·미리보기 상태(5·8단계에서 추가).** 테스트 96개 통과 |
 | 3단계 | ✅ 완료 (2026-10-29) | `PaneTab`(탭별 기록·보기 모드), `PaneTabStrip`(직접 그린 탭 막대: 닫기 버튼, 가운데 클릭·더블클릭 닫기, 드래그 순서 변경, "+" 버튼, 여러 줄 모드, 넘칠 때 목록), 주소창 드롭다운(자주 쓰는 폴더 + 드라이브, Ctrl+클릭 = 새 탭), Alt+Enter = 새 탭에서 열기, 탭 메뉴(Ctrl+T/W, Ctrl+Tab, Ctrl+Alt+A, 복제). 테스트 53개 통과 |
 | 2단계 | ✅ 완료 (2026-10-29) | `PaneControl`(탐색 막대 + 셸 뷰 + 상태 표시줄, 활성 패널 테두리), `PaneLayout`(레이아웃 13종 분할 트리), `PaneArranger`(배치 계산), `PaneLayoutPanel`(분할선 드래그·더블클릭 초기화), 레이아웃 메뉴(Alt+L, 아이콘), F6/Shift+F6/Ctrl+Alt+1~4. 테스트 43개 통과 |
@@ -293,9 +294,16 @@ windowplacement=x;y;w;h|sw=1
 - **삭제된 폴더**: 복원할 때 폴더가 없으면 존재하는 가장 가까운 상위 폴더로 대체합니다(네트워크 경로와 가상 폴더는 검사하지 않고 그대로 둠 — 응답 없는 서버에서 멈추지 않도록).
 - **창 위치**: 저장된 위치가 현재 어느 모니터와도 겹치지 않으면(모니터를 뺀 경우) 무시합니다. 파일에서 작업 공간을 열 때는 창 위치를 바꾸지 않습니다. WinForms `Form.RestoreBounds`는 한 번도 옮기지 않은 창에서 `-1,-1`을 돌려주므로 보통 상태에서는 `Bounds`를 씁니다(실제 exe 실행에서 발견해 고침).
 - **명령줄**: `.mdr` 파일을 주면 그 작업 공간을 열고, 폴더를 주면 저장된 작업 공간 위에 1번 패널로 엽니다.
-- **보류한 것과 이유**:
+- **보류한 것과 이유** (4단계):
   - 열·정렬 저장: `EBO_NOPERSISTVIEWSTATE` 때문에 셸이 폴더마다 정렬을 기억하지 않으므로, Q-Dir처럼 **폴더 종류(CLSID)별 보기 상태 저장소**(`Spatlen_` 키, `IFolderView2.GetSortColumns`/`IColumnManager`)를 따로 설계해야 합니다. 탭 단위로 저장하면 폴더를 옮길 때 엉뚱한 정렬이 적용됩니다.
   - `.qdr` 가져오기: Q-Dir `ViewMode` 값과 M-Dir 레이아웃 번호의 대응표를 아직 확인하지 못했습니다(`ViewMode=0`이 4분할 기본값인 것만 확인).
+
+5단계에서 결정한 사항:
+- **호스팅**: `CLSID_NamespaceTreeControl`(`explorerframe.dll`)을 `INameSpaceTreeControl2`로 호스팅합니다(기본 인터페이스의 vtable을 펼쳐서 선언). 스타일 기본값은 Q-Dir와 같은 `HASEXPANDOS|HORIZONTALSCROLL|SHOWSELECTIONALWAYS|TABSTOP`(+`HASLINES`)이고, Q-Dir 초기화 함수(`0x460bb6`)가 쓰는 값 `0x200A3`과 일치함을 확인했습니다. 루트는 네임스페이스 루트(바탕 화면)를 펼친 상태로 두어 탐색기 탐색 창과 같은 모양이 됩니다. 컨텍스트 메뉴·아이콘은 `E_NOTIMPL`을 돌려줘 셸 기본 동작을 씁니다.
+- **동기화 규칙**: `SelectLocation`(목록→트리)은 사용자 이벤트(`LocationSelected`)를 일으키지 않고, 트리에서 마우스·키보드로 고른 경우에만 이벤트가 나갑니다. 같은 위치의 늦게 도착한 알림은 위치 비교로 버립니다(되돌림 루프 방지). 트리에서 빠르게 방향키를 누르면 3단계의 `ERROR_BUSY` 대기열이 마지막 이동만 실행합니다.
+- **두 모드**: 패널별 트리는 켜면 처음 한 번만 만들고(안 쓰는 패널은 셸 컨트롤을 만들지 않음) 숨겨도 상태를 유지합니다. 공용 트리는 활성 패널을 따라가고, 트리에서 고르면 활성 패널이 이동합니다. 두 모드는 각자의 켬/끔 상태를 따로 저장해서 모드를 오가도 잃지 않습니다.
+- **저장**: `.mdr`의 `[Workspace]`에 `TreeMode`(0 패널별, 1 공용 — Q-Dir `tree_mode`의 의미와 같은지는 확인하지 못함), `SharedTree`, `SharedTreeSplit`, 각 `[PaneN]`에 `Tree`, `TreeSplit`(1/10000, 기본 2500 = Q-Dir `TreeNsplit` 기본값). 옵션 4종은 작업 공간이 아니라 `M-Dir.ini`의 `[Tree]`에 둡니다(모든 트리 공통 설정).
+- **보류**: 들여쓰기 옵션(내부 `SysTreeView32`에 `TVM_SETINDENT`를 보내야 함), 트리 항목 색상(6단계 색상 필터에서 `TVM_GETITEMRECT` + `HitTest`로 함, 분석 1.6 참고), 트리 안에서의 파일 작업·드래그 동작 점검(9단계).
 
 ---
 

@@ -54,8 +54,38 @@ public class WorkspaceTests
         string text = workspace.ToIni().ToText();
 
         Assert.Contains("[Workspace]\r\nVersion=1\r\nLayout=10\r\nRatios=5000,5000,5000\r\n", text);
-        Assert.Contains("[Pane4]\r\nSelected=0\r\nTabs=1\r\nTab1=%", text);
+        Assert.Contains("[Pane4]\r\nSelected=0\r\nTree=0\r\nTreeSplit=2500\r\nTabs=1\r\nTab1=%", text);
         Assert.Contains("Tab1.ViewMode=4", text);
+        Assert.Contains("TreeMode=0\r\nSharedTree=0\r\nSharedTreeSplit=2500\r\n", text);
+    }
+
+    [Fact]
+    public void TreeState_RoundTripsAndOutOfRangeSplitsAreClamped()
+    {
+        using var dir = new TempDirectory();
+        Workspace basis = Workspace.CreateDefault(Loc(WindowsDir));
+        var workspace = new Workspace
+        {
+            Panes = [basis.Panes[0] with { TreeVisible = true, TreeSplit = 3300 }, .. basis.Panes.Skip(1)],
+            SharedTree = true,
+            SharedTreeVisible = true,
+            SharedTreeSplit = 1800,
+        };
+
+        workspace.Save(dir.File("w.mdr"));
+        Workspace loaded = Workspace.Load(dir.File("w.mdr"))!;
+
+        Assert.True(loaded.SharedTree);
+        Assert.True(loaded.SharedTreeVisible);
+        Assert.Equal(1800, loaded.SharedTreeSplit);
+        Assert.True(loaded.Panes[0].TreeVisible);
+        Assert.Equal(3300, loaded.Panes[0].TreeSplit);
+        Assert.False(loaded.Panes[1].TreeVisible);
+
+        Workspace clamped = Workspace.FromIni(IniFile.Parse("[Workspace]\nSharedTreeSplit=99999\n[Pane1]\nTreeSplit=-5\nTree=1\n"))!;
+        Assert.Equal(9500, clamped.SharedTreeSplit);
+        Assert.Equal(500, clamped.Panes[0].TreeSplit);
+        Assert.True(clamped.Panes[0].TreeVisible);
     }
 
     [Fact]

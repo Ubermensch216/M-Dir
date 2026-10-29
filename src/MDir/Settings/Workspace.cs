@@ -7,8 +7,12 @@ namespace MDir.Settings;
 /// <summary>One tab of a saved pane.</summary>
 internal sealed record TabState(ShellLocation Location, FolderViewMode ViewMode, int IconSize);
 
-/// <summary>A saved pane: its tabs and which one was selected.</summary>
-internal sealed record PaneState(IReadOnlyList<TabState> Tabs, int SelectedTab);
+/// <summary>A saved pane: its tabs, which one was selected, and whether its own folder tree is on (and how wide).</summary>
+internal sealed record PaneState(
+    IReadOnlyList<TabState> Tabs,
+    int SelectedTab,
+    bool TreeVisible = false,
+    int TreeSplit = Workspace.DefaultTreeSplit);
 
 /// <summary>Window position and size in screen pixels (the restored rectangle when maximized).</summary>
 internal sealed record WindowPlacement(int X, int Y, int Width, int Height, bool Maximized)
@@ -59,8 +63,20 @@ internal sealed class Workspace
     private const int MaxTabsPerPane = 200;
     private const int MinIconSize = 16;
     private const int MaxIconSize = 256;
+    private const int MinTreeSplit = 500;
+    private const int MaxTreeSplit = 9500;
+
+    /// <summary>Tree width as a share of its pane or window, in 1/10000 (Q-Dir's default <c>Tree1split=2500</c>).</summary>
+    public const int DefaultTreeSplit = 2500;
 
     public PaneLayout Layout { get; init; } = PaneLayout.Default;
+
+    /// <summary>One tree for the whole window, following the active pane, instead of one tree per pane.</summary>
+    public bool SharedTree { get; init; }
+
+    public bool SharedTreeVisible { get; init; }
+
+    public int SharedTreeSplit { get; init; } = DefaultTreeSplit;
 
     /// <summary>Splitter ratios (1/10000) in the layout's pre-order, like Q-Dir's SP0/SP1/SP2.</summary>
     public IReadOnlyList<int> Ratios { get; init; } = PaneLayout.Default.DefaultRatios;
@@ -123,6 +139,9 @@ internal sealed class Workspace
             Ratios = ParseRatios(ini.Get(Main, "Ratios"), layout),
             ActivePane = Math.Clamp(ini.GetInt(Main, "Active", 0), 0, layout.PaneCount - 1),
             MultilineTabs = ini.GetBool(Main, "MultilineTabs", false),
+            SharedTree = ini.GetInt(Main, "TreeMode", 0) == 1,
+            SharedTreeVisible = ini.GetBool(Main, "SharedTree", false),
+            SharedTreeSplit = Math.Clamp(ini.GetInt(Main, "SharedTreeSplit", DefaultTreeSplit), MinTreeSplit, MaxTreeSplit),
             Window = WindowPlacement.TryParse(ini.Get(Main, "Window")),
             Panes = [.. Enumerable.Range(0, PaneLayout.MaxPanes).Select(i => ReadPane(ini, i, fallback))],
         };
@@ -136,6 +155,9 @@ internal sealed class Workspace
         ini.Set(Main, "Ratios", string.Join(',', Ratios.Select(ratio => ratio.ToString(CultureInfo.InvariantCulture))));
         ini.Set(Main, "Active", ActivePane);
         ini.Set(Main, "MultilineTabs", MultilineTabs);
+        ini.Set(Main, "TreeMode", SharedTree ? 1 : 0);
+        ini.Set(Main, "SharedTree", SharedTreeVisible);
+        ini.Set(Main, "SharedTreeSplit", SharedTreeSplit);
         if (Window is not null)
             ini.Set(Main, "Window", Window.ToString());
 
@@ -144,6 +166,8 @@ internal sealed class Workspace
             string section = PaneSection(i);
             PaneState pane = Panes[i];
             ini.Set(section, "Selected", pane.SelectedTab);
+            ini.Set(section, "Tree", pane.TreeVisible);
+            ini.Set(section, "TreeSplit", pane.TreeSplit);
             ini.Set(section, "Tabs", pane.Tabs.Count);
             for (int t = 0; t < pane.Tabs.Count; t++)
             {
@@ -200,6 +224,10 @@ internal sealed class Workspace
         if (tabs.Count == 0)
             tabs.Add(new TabState(fallback, FolderViewMode.Details, MinIconSize));
 
-        return new PaneState(tabs, selectedTab);
+        return new PaneState(
+            tabs,
+            selectedTab,
+            ini.GetBool(section, "Tree", false),
+            Math.Clamp(ini.GetInt(section, "TreeSplit", DefaultTreeSplit), MinTreeSplit, MaxTreeSplit));
     }
 }

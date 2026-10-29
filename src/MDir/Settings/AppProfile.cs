@@ -44,13 +44,20 @@ internal sealed class AppSettings
     /// <summary>Save the workspace on exit and restore it at the next start (Q-Dir's <c>start.qdr</c> behaviour).</summary>
     public bool AutoWorkspace { get; set; } = true;
 
+    /// <summary>Folder tree look and behaviour, shared by every tree.</summary>
+    public TreeOptions Tree { get; private set; } = new();
+
     /// <summary>Reads the file; a missing or unreadable file gives the defaults.</summary>
     public static AppSettings Load(string path)
     {
         try
         {
             var ini = IniFile.Load(path);
-            return new AppSettings { AutoWorkspace = ini.GetBool(StartSection, nameof(AutoWorkspace), true) };
+            return new AppSettings
+            {
+                AutoWorkspace = ini.GetBool(StartSection, nameof(AutoWorkspace), true),
+                Tree = TreeOptions.Read(ini),
+            };
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -63,6 +70,7 @@ internal sealed class AppSettings
     {
         var ini = IniFile.Load(path);
         ini.Set(StartSection, nameof(AutoWorkspace), AutoWorkspace);
+        Tree.Write(ini);
         ini.Save(path);
     }
 }

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MDir.Layout;
 using MDir.Settings;
 using MDir.Shell;
 
@@ -34,6 +35,14 @@ internal sealed class PaneControl : Panel
     private readonly ToolStripButton _upButton;
     private readonly ToolStripStatusLabel _itemsLabel = new();
     private readonly ToolStripStatusLabel _selectionLabel = new();
+    private readonly Panel _content = new() { Dock = DockStyle.Fill };
+    private readonly Splitter _treeSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 60, MinExtra = 120, Visible = false };
+    private FolderTreeControl? _tree;
+    private TreeOptions _treeOptions = new();
+    private int _treeSplit = Workspace.DefaultTreeSplit;
+    private bool _treeEnabled;
+    private bool _treeAvailable = true;
+    private bool _applyingTreeWidth;
     private PaneTab _currentTab;
     private bool _isActive;
 
@@ -50,11 +59,16 @@ internal sealed class PaneControl : Panel
         var status = new StatusStrip { SizingGrip = false };
         status.Items.AddRange([_itemsLabel, _selectionLabel]);
 
-        Controls.Add(Browser);
+        // Z-order matters for docking: the list (Fill) is last, then the splitter, then the tree (Left) first.
+        _content.Controls.Add(Browser);
+        _content.Controls.Add(_treeSplitter);
+        Controls.Add(_content);
         Controls.Add(BuildNavigationBar());
         Controls.Add(_tabStrip);
         Controls.Add(status);
-        Browser.BringToFront();
+        _content.BringToFront();
+        _content.SizeChanged += (_, _) => ApplyTreeWidth();
+        _treeSplitter.SplitterMoved += (_, _) => OnTreeSplitterMoved();
 
         _currentTab = new PaneTab();
         _tabStrip.Insert(0, _currentTab);
@@ -73,6 +87,7 @@ internal sealed class PaneControl : Panel
         {
             _tabStrip.RefreshTabs();
             UpdateNavigationState();
+            SyncTree();
         };
         Browser.NavigationFailed += (_, e) => MessageBox.Show(FindForm(),
             $"'{e.Location.DisplayName}' 위치를 열 수 없습니다.", "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
@@ -100,6 +115,56 @@ internal sealed class PaneControl : Panel
     public PaneTab SelectedTab => _currentTab;
 
     internal PaneTabStrip TabStrip => _tabStrip;
+
+    /// <summary>The pane's own folder tree is switched on (saved with the workspace).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool TreeEnabled
+    {
+        get => _treeEnabled;
+        set
+        {
+            _treeEnabled = value;
+            UpdateTree();
+        }
+    }
+
+    /// <summary>False while the window uses one shared tree: the pane's own tree stays switched on but hidden.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool TreeAvailable
+    {
+        get => _treeAvailable;
+        set
+        {
+            _treeAvailable = value;
+            UpdateTree();
+        }
+    }
+
+    /// <summary>Tree width as a share of the pane in 1/10000 (Q-Dir's <c>TreeNsplit</c>).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public int TreeSplit
+    {
+        get => _treeSplit;
+        set
+        {
+            _treeSplit = Math.Clamp(value, 500, 9500);
+            ApplyTreeWidth();
+        }
+    }
+
+    internal FolderTreeControl? Tree => _tree;
+
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal TreeOptions TreeOptions
+    {
+        get => _treeOptions;
+        set
+        {
+            _treeOptions = value;
+            if (_tree is not null)
+                _tree.Options = value;
+        }
+    }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public bool IsActive
@@ -136,7 +201,9 @@ internal sealed class PaneControl : Panel
         ShellLocation fallback = Workspace.DefaultLocation;
         return new PaneState(
             [.. Tabs.Select(tab => new TabState(tab.Location ?? fallback, tab.ViewMode, tab.IconSize))],
-            _tabStrip.SelectedIndex);
+            _tabStrip.SelectedIndex,
+            _treeEnabled,
+            _treeSplit);
     }
 
     /// <summary>
@@ -163,6 +230,8 @@ internal sealed class PaneControl : Panel
         foreach (PaneTab tab in old)
             tab.Dispose();
 
+        _treeSplit = Math.Clamp(state.TreeSplit, 500, 9500);
+        TreeEnabled = state.TreeVisible;
         UpdateNavigationState();
     }
 
@@ -220,6 +289,66 @@ internal sealed class PaneControl : Panel
         using var region = new Region(ClientRectangle);
         region.Exclude(inner);
         e.Graphics.FillRegion(brush, region);
+    }
+
+    /// <summary>Moves keyboard focus into this pane's tree (when shown).</summary>
+    public void FocusTree() => _tree?.FocusTree();
+
+    private void UpdateTree()
+    {
+        bool show = _treeEnabled && _treeAvailable;
+
+        // Created on first use: panes that never show a tree never create the shell control.
+        if (show && _tree is null)
+        {
+            _tree = new FolderTreeControl { Dock = DockStyle.Left, Options = _treeOptions };
+            _tree.LocationSelected += (_, e) => Browser.Navigate(e.Location);
+            _content.Controls.Add(_tree);
+        }
+
+        if (_tree is not null)
+            _tree.Visible = show;
+        _treeSplitter.Visible = show;
+        if (show)
+        {
+            ApplyTreeWidth();
+            SyncTree();
+        }
+    }
+
+    /// <summary>Keeps the tree's selection on the folder the list shows.</summary>
+    private void SyncTree()
+    {
+        if (_treeEnabled && _treeAvailable && Browser.CurrentLocation is { } location)
+            _tree?.SelectLocation(location);
+    }
+
+    private void ApplyTreeWidth()
+    {
+        if (_tree is null || !_treeEnabled || !_treeAvailable)
+            return;
+
+        int available = _content.ClientSize.Width - _treeSplitter.Width;
+        int width = Math.Clamp(available * _treeSplit / PaneLayout.RatioScale, _treeSplitter.MinSize, Math.Max(_treeSplitter.MinSize, available - _treeSplitter.MinExtra));
+        if (_tree.Width == width)
+            return;
+
+        _applyingTreeWidth = true;
+        try
+        {
+            _tree.Width = width;
+        }
+        finally
+        {
+            _applyingTreeWidth = false;
+        }
+    }
+
+    private void OnTreeSplitterMoved()
+    {
+        int available = _content.ClientSize.Width - _treeSplitter.Width;
+        if (!_applyingTreeWidth && _tree is not null && available > 0)
+            _treeSplit = Math.Clamp(_tree.Width * PaneLayout.RatioScale / available, 500, 9500);
     }
 
     private PaneTab InsertTab(PaneTab tab, bool select)

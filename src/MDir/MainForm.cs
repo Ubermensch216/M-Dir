@@ -19,6 +19,18 @@ internal sealed class MainForm : Form, IMessageFilter
     private readonly AppProfile? _profile;
     private ToolStripMenuItem _multilineMenu = null!;
     private ToolStripMenuItem _autoWorkspaceMenu = null!;
+    private readonly Panel _workArea = new() { Dock = DockStyle.Fill };
+    private readonly Splitter _sharedSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 80, MinExtra = 300, Visible = false };
+    private readonly TreeOptions _fallbackTreeOptions = new();
+    private FolderTreeControl? _sharedTree;
+    private bool _sharedTreeMode;
+    private bool _sharedTreeVisible;
+    private int _sharedTreeSplit = Workspace.DefaultTreeSplit;
+    private bool _applyingSharedWidth;
+    private ToolStripMenuItem _treeMenu = null!;
+    private ToolStripMenuItem _treePaneModeMenu = null!;
+    private ToolStripMenuItem _treeSharedModeMenu = null!;
+    private readonly List<(Func<TreeOptions, bool> Get, Action<TreeOptions, bool> Set, ToolStripMenuItem Item)> _treeOptionItems = [];
     private string? _workspacePath;
     private readonly ToolStripMenuItem _backMenu;
     private readonly ToolStripMenuItem _forwardMenu;
@@ -61,10 +73,16 @@ internal sealed class MainForm : Form, IMessageFilter
         _upMenu = new ToolStripMenuItem("상위 폴더(&U)", null, (_, _) => ActiveBrowser.GoUp(), Keys.Alt | Keys.Up);
 
         var menu = BuildMenu();
-        Controls.Add(_layoutPanel);
+
+        // Z-order matters for docking: the pane area (Fill) is last, then the splitter, then the shared tree (Left).
+        _workArea.Controls.Add(_layoutPanel);
+        _workArea.Controls.Add(_sharedSplitter);
+        Controls.Add(_workArea);
         Controls.Add(menu);
         MainMenuStrip = menu;
-        _layoutPanel.BringToFront();
+        _workArea.BringToFront();
+        _workArea.SizeChanged += (_, _) => ApplySharedTreeWidth();
+        _sharedSplitter.SplitterMoved += (_, _) => OnSharedSplitterMoved();
 
         ApplyWorkspace(workspace ?? Workspace.CreateDefault(startFolder ?? Workspace.DefaultLocation), applyWindow: true);
         if (workspace is not null && startFolder is not null)
@@ -92,6 +110,9 @@ internal sealed class MainForm : Form, IMessageFilter
             Ratios = [.. _layoutPanel.Ratios],
             ActivePane = _activePane.Index,
             MultilineTabs = _multilineMenu.Checked,
+            SharedTree = _sharedTreeMode,
+            SharedTreeVisible = _sharedTreeVisible,
+            SharedTreeSplit = _sharedTreeSplit,
             Window = new WindowPlacement(bounds.X, bounds.Y, bounds.Width, bounds.Height, WindowState == FormWindowState.Maximized),
             Panes = [.. _panes.Select(pane => pane.CaptureState())],
         };
@@ -104,9 +125,19 @@ internal sealed class MainForm : Form, IMessageFilter
     internal void ApplyWorkspace(Workspace workspace, bool applyWindow)
     {
         _layoutPanel.Restore(workspace.Layout, workspace.Ratios);
-        for (int i = 0; i < _panes.Length; i++)
-            _panes[i].ApplyState(workspace.Panes[i]);
 
+        // Decide where the tree lives before the panes load, so a shared-tree window never builds per-pane trees.
+        _sharedTreeMode = workspace.SharedTree;
+        _sharedTreeVisible = workspace.SharedTreeVisible;
+        _sharedTreeSplit = workspace.SharedTreeSplit;
+        for (int i = 0; i < _panes.Length; i++)
+        {
+            _panes[i].TreeAvailable = !_sharedTreeMode;
+            _panes[i].TreeOptions = TreeSettings;
+            _panes[i].ApplyState(workspace.Panes[i]);
+        }
+
+        UpdateSharedTree();
         _multilineMenu.Checked = workspace.MultilineTabs;
         if (applyWindow && workspace.Window is { } window)
             ApplyWindowPlacement(window);
@@ -268,6 +299,8 @@ internal sealed class MainForm : Form, IMessageFilter
 
         view.DropDownItems.Add(new ToolStripSeparator());
         view.DropDownItems.Add(new ToolStripMenuItem("새로 고침(&R)", null, (_, _) => ActiveBrowser.RefreshView(), Keys.F5));
+        view.DropDownItems.Add(new ToolStripSeparator());
+        view.DropDownItems.AddRange(BuildTreeMenuItems());
 
         var go = new ToolStripMenuItem("이동(&G)");
         go.DropDownItems.AddRange([_backMenu, _forwardMenu, _upMenu]);
@@ -320,6 +353,145 @@ internal sealed class MainForm : Form, IMessageFilter
         var menu = new MenuStrip { Dock = DockStyle.Top };
         menu.Items.AddRange([file, view, go, tabs, layout]);
         return menu;
+    }
+
+    private TreeOptions TreeSettings => _profile?.Settings.Tree ?? _fallbackTreeOptions;
+
+    private ToolStripItem[] BuildTreeMenuItems()
+    {
+        _treeMenu = new ToolStripMenuItem("폴더 트리 표시(&T)", null, (_, _) => ToggleTree(), Keys.F9);
+        _treePaneModeMenu = new ToolStripMenuItem("패널별 트리(&P)", null, (_, _) => SetSharedTreeMode(false));
+        _treeSharedModeMenu = new ToolStripMenuItem("공용 트리(&S)", null, (_, _) => SetSharedTreeMode(true));
+
+        var options = new ToolStripMenuItem("트리 옵션(&O)");
+        void AddOption(string text, Func<TreeOptions, bool> get, Action<TreeOptions, bool> set)
+        {
+            var item = new ToolStripMenuItem(text);
+            item.Click += (_, _) =>
+            {
+                set(TreeSettings, !get(TreeSettings));
+                ApplyTreeOptions();
+            };
+            _treeOptionItems.Add((get, set, item));
+            options.DropDownItems.Add(item);
+        }
+
+        AddOption("연결선 표시", o => o.Lines, (o, v) => o.Lines = v);
+        AddOption("전체 행 선택 (연결선 없음)", o => o.FullRowSelect, (o, v) => o.FullRowSelect = v);
+        AddOption("한 번 클릭으로 펼치기", o => o.SingleClickExpand, (o, v) => o.SingleClickExpand = v);
+        AddOption("현재 폴더 자동 펼치기", o => o.AutoExpand, (o, v) => o.AutoExpand = v);
+
+        return [_treeMenu, _treePaneModeMenu, _treeSharedModeMenu, options];
+    }
+
+    /// <summary>Shows or hides the tree: the active pane's own tree, or the shared one in shared mode.</summary>
+    internal void ToggleTree()
+    {
+        if (_sharedTreeMode)
+        {
+            _sharedTreeVisible = !_sharedTreeVisible;
+            UpdateSharedTree();
+        }
+        else
+        {
+            _activePane.TreeEnabled = !_activePane.TreeEnabled;
+        }
+
+        UpdateTreeMenu();
+    }
+
+    /// <summary>Switches between a tree per pane and one tree for the window; each mode keeps its own on/off state.</summary>
+    internal void SetSharedTreeMode(bool shared)
+    {
+        if (_sharedTreeMode == shared)
+            return;
+
+        _sharedTreeMode = shared;
+        foreach (PaneControl pane in _panes)
+            pane.TreeAvailable = !shared;
+
+        UpdateSharedTree();
+        UpdateTreeMenu();
+    }
+
+    internal FolderTreeControl? SharedTree => _sharedTree;
+
+    internal bool SharedTreeMode => _sharedTreeMode;
+
+    private void ApplyTreeOptions()
+    {
+        foreach (PaneControl pane in _panes)
+            pane.TreeOptions = TreeSettings;
+        if (_sharedTree is not null)
+            _sharedTree.Options = TreeSettings;
+
+        UpdateTreeMenu();
+        SaveSettings();
+    }
+
+    private void UpdateSharedTree()
+    {
+        bool show = _sharedTreeMode && _sharedTreeVisible;
+        if (show && _sharedTree is null)
+        {
+            _sharedTree = new FolderTreeControl { Dock = DockStyle.Left, Options = TreeSettings };
+            _sharedTree.LocationSelected += (_, e) => ActiveBrowser.Navigate(e.Location);
+            _workArea.Controls.Add(_sharedTree);
+        }
+
+        if (_sharedTree is not null)
+            _sharedTree.Visible = show;
+        _sharedSplitter.Visible = show;
+        if (show)
+        {
+            ApplySharedTreeWidth();
+            SyncSharedTree();
+        }
+    }
+
+    /// <summary>The shared tree follows the active pane's current folder.</summary>
+    private void SyncSharedTree()
+    {
+        if (_sharedTreeMode && _sharedTreeVisible && ActiveBrowser.CurrentLocation is { } location)
+            _sharedTree?.SelectLocation(location);
+    }
+
+    private void ApplySharedTreeWidth()
+    {
+        if (_sharedTree is null || !_sharedTreeMode || !_sharedTreeVisible)
+            return;
+
+        int available = _workArea.ClientSize.Width - _sharedSplitter.Width;
+        int width = Math.Clamp(available * _sharedTreeSplit / PaneLayout.RatioScale, _sharedSplitter.MinSize,
+            Math.Max(_sharedSplitter.MinSize, available - _sharedSplitter.MinExtra));
+        if (_sharedTree.Width == width)
+            return;
+
+        _applyingSharedWidth = true;
+        try
+        {
+            _sharedTree.Width = width;
+        }
+        finally
+        {
+            _applyingSharedWidth = false;
+        }
+    }
+
+    private void OnSharedSplitterMoved()
+    {
+        int available = _workArea.ClientSize.Width - _sharedSplitter.Width;
+        if (!_applyingSharedWidth && _sharedTree is not null && available > 0)
+            _sharedTreeSplit = Math.Clamp(_sharedTree.Width * PaneLayout.RatioScale / available, 500, 9500);
+    }
+
+    private void UpdateTreeMenu()
+    {
+        _treeMenu.Checked = _sharedTreeMode ? _sharedTreeVisible : _activePane.TreeEnabled;
+        _treePaneModeMenu.Checked = !_sharedTreeMode;
+        _treeSharedModeMenu.Checked = _sharedTreeMode;
+        foreach (var (get, _, item) in _treeOptionItems)
+            item.Checked = get(TreeSettings);
     }
 
     private void NewTab()
@@ -396,9 +568,14 @@ internal sealed class MainForm : Form, IMessageFilter
             return;
 
         _profile.Settings.AutoWorkspace = enabled;
+        SaveSettings();
+    }
+
+    private void SaveSettings()
+    {
         try
         {
-            _profile.SaveSettings();
+            _profile?.SaveSettings();
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -443,5 +620,8 @@ internal sealed class MainForm : Form, IMessageFilter
 
         string name = browser.CurrentLocation?.DisplayName ?? string.Empty;
         Text = name.Length > 0 ? $"{name} - M-Dir" : "M-Dir";
+
+        SyncSharedTree();
+        UpdateTreeMenu();
     }
 }

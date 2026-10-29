@@ -246,6 +246,21 @@ internal static partial class NativeMethods
     [LibraryImport("shlwapi.dll")]
     public static partial int SHAutoComplete(IntPtr hwndEdit, uint dwFlags);
 
+    [LibraryImport("shell32.dll")]
+    public static partial int SHCreateItemFromIDList(IntPtr pidl, ref Guid riid, out IntPtr ppv);
+
+    [LibraryImport("shell32.dll")]
+    public static partial int SHGetIDListFromObject(IntPtr punk, out IntPtr ppidl);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool MoveWindow(IntPtr hWnd, int x, int y, int width, int height, [MarshalAs(UnmanagedType.Bool)] bool repaint);
+
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetWindow(IntPtr hWnd, uint uCmd);
+
+    public const uint GW_CHILD = 5;
+
     public const uint SHGFI_SMALLICON = 0x1;
     public const uint SHGFI_PIDL = 0x8;
     public const uint SHGFI_ICON = 0x100;
