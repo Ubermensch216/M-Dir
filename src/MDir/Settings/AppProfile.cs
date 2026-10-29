@@ -1,3 +1,5 @@
+using MDir.Features;
+
 namespace MDir.Settings;
 
 /// <summary>
@@ -40,6 +42,9 @@ internal sealed class AppPaths
 internal sealed class AppSettings
 {
     private const string StartSection = "Start";
+    private const string ColorSection = "ColorFilter";
+    private const string RecentSection = "RecentFilters";
+    private const int MaxRecentFilters = 20;
 
     /// <summary>Save the workspace on exit and restore it at the next start (Q-Dir's <c>start.qdr</c> behaviour).</summary>
     public bool AutoWorkspace { get; set; } = true;
@@ -47,17 +52,48 @@ internal sealed class AppSettings
     /// <summary>Folder tree look and behaviour, shared by every tree.</summary>
     public TreeOptions Tree { get; private set; } = new();
 
+    /// <summary>Colour the file lists by <see cref="ColorRules"/>.</summary>
+    public bool ColorFilterEnabled { get; set; } = true;
+
+    /// <summary>The colour rules (Q-Dir's colour filter), shared by every pane.</summary>
+    public ColorRuleSet ColorRules { get; set; } = ColorRuleSet.CreateDefault();
+
+    /// <summary>File name filters typed before, newest first.</summary>
+    public List<string> RecentFilters { get; } = [];
+
+    /// <summary>Puts <paramref name="pattern"/> at the front of <see cref="RecentFilters"/> (once, at most 20 kept).</summary>
+    public void AddRecentFilter(string pattern)
+    {
+        pattern = pattern.Trim();
+        if (pattern.Length == 0)
+            return;
+
+        RecentFilters.RemoveAll(existing => string.Equals(existing, pattern, StringComparison.OrdinalIgnoreCase));
+        RecentFilters.Insert(0, pattern);
+        if (RecentFilters.Count > MaxRecentFilters)
+            RecentFilters.RemoveRange(MaxRecentFilters, RecentFilters.Count - MaxRecentFilters);
+    }
+
     /// <summary>Reads the file; a missing or unreadable file gives the defaults.</summary>
     public static AppSettings Load(string path)
     {
         try
         {
             var ini = IniFile.Load(path);
-            return new AppSettings
+            var settings = new AppSettings
             {
                 AutoWorkspace = ini.GetBool(StartSection, nameof(AutoWorkspace), true),
                 Tree = TreeOptions.Read(ini),
+                ColorFilterEnabled = ini.GetBool(ColorSection, "Enabled", true),
+                ColorRules = ColorRuleSet.Read(ini) ?? ColorRuleSet.CreateDefault(),
             };
+            for (int i = 1; i <= MaxRecentFilters; i++)
+            {
+                if (ini.Get(RecentSection, $"Filter{i}") is { Length: > 0 } filter)
+                    settings.RecentFilters.Add(filter);
+            }
+
+            return settings;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -71,6 +107,11 @@ internal sealed class AppSettings
         var ini = IniFile.Load(path);
         ini.Set(StartSection, nameof(AutoWorkspace), AutoWorkspace);
         Tree.Write(ini);
+        ini.Set(ColorSection, "Enabled", ColorFilterEnabled);
+        ColorRules.Write(ini);
+        ini.Set(RecentSection, "Count", RecentFilters.Count);
+        for (int i = 0; i < MaxRecentFilters; i++)
+            ini.Set(RecentSection, $"Filter{i + 1}", i < RecentFilters.Count ? RecentFilters[i] : string.Empty);
         ini.Save(path);
     }
 }

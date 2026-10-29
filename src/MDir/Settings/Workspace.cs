@@ -1,4 +1,5 @@
 using System.Globalization;
+using MDir.Features;
 using MDir.Layout;
 using MDir.Shell;
 
@@ -7,12 +8,17 @@ namespace MDir.Settings;
 /// <summary>One tab of a saved pane.</summary>
 internal sealed record TabState(ShellLocation Location, FolderViewMode ViewMode, int IconSize);
 
-/// <summary>A saved pane: its tabs, which one was selected, and whether its own folder tree is on (and how wide).</summary>
+/// <summary>
+/// A saved pane: its tabs, which one was selected, whether its own folder tree is on (and how wide), and its
+/// name filter (null = none) with the filter bar's visibility.
+/// </summary>
 internal sealed record PaneState(
     IReadOnlyList<TabState> Tabs,
     int SelectedTab,
     bool TreeVisible = false,
-    int TreeSplit = Workspace.DefaultTreeSplit);
+    int TreeSplit = Workspace.DefaultTreeSplit,
+    FileFilter? Filter = null,
+    bool FilterBarVisible = false);
 
 /// <summary>Window position and size in screen pixels (the restored rectangle when maximized).</summary>
 internal sealed record WindowPlacement(int X, int Y, int Width, int Height, bool Maximized)
@@ -168,6 +174,14 @@ internal sealed class Workspace
             ini.Set(section, "Selected", pane.SelectedTab);
             ini.Set(section, "Tree", pane.TreeVisible);
             ini.Set(section, "TreeSplit", pane.TreeSplit);
+            ini.Set(section, "FilterBar", pane.FilterBarVisible);
+            if (pane.Filter is { Pattern.Length: > 0 } filter)
+            {
+                ini.Set(section, "Filter", filter.Pattern);
+                ini.Set(section, "FilterAuto", filter.AutoWildcard);
+                ini.Set(section, "FilterNot", filter.Negative);
+                ini.Set(section, "FilterDirs", filter.FilterFolders);
+            }
             ini.Set(section, "Tabs", pane.Tabs.Count);
             for (int t = 0; t < pane.Tabs.Count; t++)
             {
@@ -228,6 +242,10 @@ internal sealed class Workspace
             tabs,
             selectedTab,
             ini.GetBool(section, "Tree", false),
-            Math.Clamp(ini.GetInt(section, "TreeSplit", DefaultTreeSplit), MinTreeSplit, MaxTreeSplit));
+            Math.Clamp(ini.GetInt(section, "TreeSplit", DefaultTreeSplit), MinTreeSplit, MaxTreeSplit),
+            ini.Get(section, "Filter") is { Length: > 0 } pattern
+                ? new FileFilter(pattern, ini.GetBool(section, "FilterAuto", true), ini.GetBool(section, "FilterNot", false), ini.GetBool(section, "FilterDirs", false))
+                : null,
+            ini.GetBool(section, "FilterBar", false));
     }
 }

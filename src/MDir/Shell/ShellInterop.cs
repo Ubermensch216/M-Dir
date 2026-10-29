@@ -94,6 +94,26 @@ internal struct NativeMsg
     public uint Private;
 }
 
+/// <summary>LOGFONTW.</summary>
+[StructLayout(LayoutKind.Sequential)]
+internal unsafe struct LogFont
+{
+    public int Height;
+    public int Width;
+    public int Escapement;
+    public int Orientation;
+    public int Weight;
+    public byte Italic;
+    public byte Underline;
+    public byte StrikeOut;
+    public byte CharSet;
+    public byte OutPrecision;
+    public byte ClipPrecision;
+    public byte Quality;
+    public byte PitchAndFamily;
+    public fixed char FaceName[32];
+}
+
 /// <summary>SHFILEINFOW.</summary>
 [StructLayout(LayoutKind.Sequential)]
 internal unsafe struct ShFileInfo
@@ -246,6 +266,9 @@ internal static partial class NativeMethods
     [LibraryImport("shlwapi.dll")]
     public static partial int SHAutoComplete(IntPtr hwndEdit, uint dwFlags);
 
+    [LibraryImport("shlwapi.dll", EntryPoint = "StrRetToStrW")]
+    public static partial int StrRetToStr(ref StrRet pstr, IntPtr pidl, out IntPtr ppsz);
+
     [LibraryImport("shell32.dll")]
     public static partial int SHCreateItemFromIDList(IntPtr pidl, ref Guid riid, out IntPtr ppv);
 
@@ -260,6 +283,56 @@ internal static partial class NativeMethods
     public static partial IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
     public const uint GW_CHILD = 5;
+    public const uint GW_HWNDNEXT = 2;
+
+    public const uint WM_GETFONT = 0x0031;
+    public const uint LVM_GETBKCOLOR = 0x1000;
+    public const uint LVM_SETBKCOLOR = 0x1001;
+    public const uint LVM_GETITEMSTATE = 0x102C;
+    public const uint LVM_SETTEXTBKCOLOR = 0x1026;
+    public const int COLOR_WINDOW = 5;
+    public const uint RDW_INVALIDATE = 0x1;
+    public const uint RDW_ERASE = 0x4;
+    public const uint RDW_ALLCHILDREN = 0x80;
+
+    [LibraryImport("user32.dll", EntryPoint = "SendMessageW")]
+    public static partial IntPtr SendMessage(IntPtr hWnd, uint msg, IntPtr wParam, IntPtr lParam);
+
+    [LibraryImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool RedrawWindow(IntPtr hWnd, IntPtr lprcUpdate, IntPtr hrgnUpdate, uint flags);
+
+    [LibraryImport("user32.dll")]
+    public static partial int GetSysColor(int nIndex);
+
+    [LibraryImport("gdi32.dll", EntryPoint = "GetObjectW")]
+    public static unsafe partial int GetObject(IntPtr h, int c, void* pv);
+
+    [LibraryImport("gdi32.dll", EntryPoint = "CreateFontIndirectW")]
+    public static unsafe partial IntPtr CreateFontIndirect(LogFont* lplf);
+
+    [LibraryImport("gdi32.dll")]
+    public static partial IntPtr SelectObject(IntPtr hdc, IntPtr h);
+
+    [LibraryImport("gdi32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    public static partial bool DeleteObject(IntPtr ho);
+
+    /// <summary>First descendant window of <paramref name="parent"/> with the given class name, or zero.</summary>
+    public static IntPtr FindDescendant(IntPtr parent, string className)
+    {
+        for (IntPtr child = GetWindow(parent, GW_CHILD); child != IntPtr.Zero; child = GetWindow(child, GW_HWNDNEXT))
+        {
+            if (GetClassName(child) == className)
+                return child;
+
+            IntPtr found = FindDescendant(child, className);
+            if (found != IntPtr.Zero)
+                return found;
+        }
+
+        return IntPtr.Zero;
+    }
 
     public const uint SHGFI_SMALLICON = 0x1;
     public const uint SHGFI_PIDL = 0x8;

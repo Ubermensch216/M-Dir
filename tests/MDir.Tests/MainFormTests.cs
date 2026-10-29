@@ -28,6 +28,7 @@ public class MainFormTests(ITestOutputHelper output)
             await WaitUntil(() => form.Panes[3].Browser.IsHandleCreated && form.Panes[3].Browser.ItemCount > 0, "pane 4 browsed once shown");
             await WaitUntil(() => form.Panes.All(pane => pane.Browser.ItemCount > 0), "all panes enumerated");
 
+            await Task.Delay(1500);
             output.WriteLine($"Screenshot: {SaveScreenshot(form, "main-form-grid.png")}");
         });
     }

@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using MDir.Features;
 using MDir.Layout;
 using MDir.Settings;
 using MDir.Shell;
@@ -35,6 +36,7 @@ internal sealed class PaneControl : Panel
     private readonly ToolStripButton _upButton;
     private readonly ToolStripStatusLabel _itemsLabel = new();
     private readonly ToolStripStatusLabel _selectionLabel = new();
+    private readonly PaneFilterBar _filterBar = new() { Dock = DockStyle.Bottom, Visible = false };
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
     private readonly Splitter _treeSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 60, MinExtra = 120, Visible = false };
     private FolderTreeControl? _tree;
@@ -45,6 +47,7 @@ internal sealed class PaneControl : Panel
     private bool _applyingTreeWidth;
     private PaneTab _currentTab;
     private bool _isActive;
+    private bool _filterBarShown;
 
     public PaneControl(int index)
     {
@@ -65,6 +68,9 @@ internal sealed class PaneControl : Panel
         Controls.Add(_content);
         Controls.Add(BuildNavigationBar());
         Controls.Add(_tabStrip);
+
+        // The filter bar docks above the status bar, so it is added before it.
+        Controls.Add(_filterBar);
         Controls.Add(status);
         _content.BringToFront();
         _content.SizeChanged += (_, _) => ApplyTreeWidth();
@@ -92,6 +98,10 @@ internal sealed class PaneControl : Panel
         Browser.NavigationFailed += (_, e) => MessageBox.Show(FindForm(),
             $"'{e.Location.DisplayName}' 위치를 열 수 없습니다.", "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         Browser.ItemsChanged += (_, _) => UpdateStatus();
+        Browser.ViewFocused += (_, _) => ViewFocused?.Invoke(this, EventArgs.Empty);
+        _filterBar.FilterChanged += (_, _) => ApplyFilterFromBar();
+        _filterBar.PatternCommitted += (_, pattern) => FilterCommitted?.Invoke(this, pattern);
+        _filterBar.Dismissed += (_, _) => FocusBrowser();
         Browser.ViewModeChanged += (_, _) =>
         {
             _currentTab.ViewMode = Browser.ViewMode;
@@ -105,6 +115,12 @@ internal sealed class PaneControl : Panel
     /// <summary>Raised when the folder, history, counts, view mode or selected tab change.</summary>
     public event EventHandler? StateChanged;
 
+    /// <summary>Raised when the pane's file list got keyboard focus (so the window can make this pane the active one).</summary>
+    public event EventHandler? ViewFocused;
+
+    /// <summary>Raised with a filter pattern the user confirmed, to be remembered in the recent list.</summary>
+    public event EventHandler<string>? FilterCommitted;
+
     /// <summary>Zero-based pane number (0 = top-left).</summary>
     public int Index { get; }
 
@@ -115,6 +131,8 @@ internal sealed class PaneControl : Panel
     public PaneTab SelectedTab => _currentTab;
 
     internal PaneTabStrip TabStrip => _tabStrip;
+
+    internal PaneFilterBar FilterBar => _filterBar;
 
     /// <summary>The pane's own folder tree is switched on (saved with the workspace).</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -177,8 +195,62 @@ internal sealed class PaneControl : Panel
 
             _isActive = value;
             _tabStrip.Active = value;
+            Browser.IsActivePane = value;
             Invalidate();
         }
+    }
+
+    /// <summary>The colour rules for this pane's list (null = no colouring).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal ColorRuleSet? ColorRules
+    {
+        get => Browser.ColorRules;
+        set => Browser.ColorRules = value;
+    }
+
+    /// <summary>The pane's name filter (<see cref="FileFilter.None"/> when off).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal FileFilter Filter
+    {
+        get => Browser.FileFilter;
+        set
+        {
+            _filterBar.Filter = value;
+            Browser.FileFilter = value;
+            if (value.IsActive)
+                FilterBarVisible = true;
+            UpdateStatus();
+        }
+    }
+
+    /// <summary>
+    /// Shows the filter bar. Hiding it also clears the filter, so a filter can never be active without being visible.
+    /// </summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool FilterBarVisible
+    {
+        get => _filterBarShown;
+        set
+        {
+            // Own flag: Control.Visible is also false while a parent (e.g. a pane hidden by the layout) is hidden.
+            if (_filterBarShown == value)
+                return;
+
+            _filterBarShown = value;
+            _filterBar.Visible = value;
+            if (!value && Browser.FileFilter.IsActive)
+                Filter = FileFilter.None;
+        }
+    }
+
+    /// <summary>Patterns offered by the filter box, newest first.</summary>
+    internal void SetRecentFilters(IEnumerable<string> patterns) => _filterBar.SetHistory(patterns);
+
+    /// <summary>Shows the filter bar and puts the caret in its pattern box.</summary>
+    public void FocusFilter()
+    {
+        FilterBarVisible = true;
+        _filterBar.FocusPattern();
     }
 
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -203,7 +275,9 @@ internal sealed class PaneControl : Panel
             [.. Tabs.Select(tab => new TabState(tab.Location ?? fallback, tab.ViewMode, tab.IconSize))],
             _tabStrip.SelectedIndex,
             _treeEnabled,
-            _treeSplit);
+            _treeSplit,
+            Browser.FileFilter.IsActive ? Browser.FileFilter : null,
+            _filterBarShown);
     }
 
     /// <summary>
@@ -232,6 +306,8 @@ internal sealed class PaneControl : Panel
 
         _treeSplit = Math.Clamp(state.TreeSplit, 500, 9500);
         TreeEnabled = state.TreeVisible;
+        FilterBarVisible = state.FilterBarVisible;
+        Filter = state.Filter ?? FileFilter.None;
         UpdateNavigationState();
     }
 
@@ -510,9 +586,15 @@ internal sealed class PaneControl : Panel
         StateChanged?.Invoke(this, EventArgs.Empty);
     }
 
+    private void ApplyFilterFromBar()
+    {
+        Browser.FileFilter = _filterBar.Filter;
+        UpdateStatus();
+    }
+
     private void UpdateStatus()
     {
-        _itemsLabel.Text = $"항목 {Browser.ItemCount:N0}개";
+        _itemsLabel.Text = Browser.FileFilter.IsActive ? $"항목 {Browser.ItemCount:N0}개 (필터됨)" : $"항목 {Browser.ItemCount:N0}개";
         _selectionLabel.Text = Browser.SelectedCount > 0 ? $"|  {Browser.SelectedCount:N0}개 선택됨" : string.Empty;
     }
 }

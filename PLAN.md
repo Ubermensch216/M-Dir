@@ -263,6 +263,7 @@ windowplacement=x;y;w;h|sw=1
 |---|---|---|
 | 0단계 | ✅ 완료 (2026-10-28) | `MDir.slnx`, `src/MDir`(WinForms, .NET 10, 실행 파일 `M-Dir.exe`), `tests/MDir.Tests`(xUnit) |
 | 1단계 | ✅ 완료 (2026-10-28) | `ExplorerBrowserHost`(IExplorerBrowser 호스팅), 자체 탐색 기록, 패널 단위 보기 모드, 키보드 라우팅(화살표·Tab·Backspace·셸 단축키), 마우스 뒤로/앞으로 버튼, 주소창 자동 완성. 테스트 14개 통과(통합 테스트 3개는 실제 셸 뷰로 검증) |
+| 6단계 | ✅ 대부분 완료 (2026-10-29) | `FVO_VISTALAYOUT`(SysListView32 목록), 파일 필터(`ICommDlgBrowser::IncludeObject`: 포함·제외·자동 `*패턴*`·폴더 필터, 패널별 필터 막대 Ctrl+Shift+F, 최근 필터 20개), 색상 필터(DefView 서브클래스 `NM_CUSTOMDRAW`, 규칙 편집 대화상자, Q-Dir `[Filter2]` 가져오기/내보내기, `#DIR`·`#Hidden`·`#BG`·`#BG-A`), 선택·포커스 알림을 `OnStateChange`로 받음(활성 패널 전환에도 사용). **미완료: 트리 항목 색상, 목록 Shift+휠 가로 스크롤, 정렬 열 강조 끄기.** 테스트 160개 통과 |
 | 5단계 | ✅ 완료 (2026-10-29), 들여쓰기 옵션 제외 | `FolderTreeControl`(셸 `INameSpaceTreeControl2` 호스팅, 바탕 화면 루트), 패널별 트리(`PaneControl`, 분할선 드래그)와 공용 트리(`MainForm`, 활성 패널을 따라감), 목록↔트리 양방향 동기화, 트리 옵션 4종(연결선·전체 행 선택·한 번 클릭 펼침·현재 폴더 자동 펼침, `M-Dir.ini`의 `[Tree]`), 트리 상태 작업 공간 저장·복원. 보기 메뉴 + F9. 테스트 108개 통과 |
 | 4단계 | ⚠️ 일부 완료 (2026-10-29) | 완료: `IniFile`(UTF-16, 원자적 저장), `AppPaths`(포터블 `M-Dir.ini` 감지 / `%APPDATA%\M-Dir`), `AppSettings`, `Workspace`(`.mdr`: 레이아웃·분할 비율·패널별 탭 PIDL·보기 모드·활성 패널·창 위치), `start.mdr` 자동 저장/복원, 파일 메뉴(새로 만들기 Ctrl+N / 열기 Ctrl+O / 저장 Ctrl+S / 다른 이름으로), 명령줄 `.mdr`·폴더 인자. **미완료: 패널별 열·정렬 저장, Q-Dir `.qdr` 가져오기, 트리·미리보기 상태(5·8단계에서 추가).** 테스트 96개 통과 |
 | 3단계 | ✅ 완료 (2026-10-29) | `PaneTab`(탭별 기록·보기 모드), `PaneTabStrip`(직접 그린 탭 막대: 닫기 버튼, 가운데 클릭·더블클릭 닫기, 드래그 순서 변경, "+" 버튼, 여러 줄 모드, 넘칠 때 목록), 주소창 드롭다운(자주 쓰는 폴더 + 드라이브, Ctrl+클릭 = 새 탭), Alt+Enter = 새 탭에서 열기, 탭 메뉴(Ctrl+T/W, Ctrl+Tab, Ctrl+Alt+A, 복제). 테스트 53개 통과 |
@@ -271,7 +272,7 @@ windowplacement=x;y;w;h|sw=1
 1단계에서 결정한 사항:
 - 탐색 기록은 `EBO_NOTRAVELLOG`로 브라우저 자체 기록을 끄고 `NavigationHistory<ShellLocation>`로 직접 관리합니다(3단계 탭 전환 시 브라우저를 다시 만들어도 기록이 남도록).
 - 보기 모드는 `EBO_NOPERSISTVIEWSTATE`로 폴더별 저장을 끄고 패널 단위로 유지합니다(Q-Dir의 `ViewModeN`과 같은 방식).
-- 선택 변경 이벤트는 임시로 250ms 간격 폴링을 씁니다. 6단계에서 `ICommDlgBrowser`(Q-Dir도 구현함)를 넣으면서 `OnStateChange`로 바꿉니다.
+- 선택 변경 이벤트는 임시로 250ms 간격 폴링을 썼고, 6단계에서 `ICommDlgBrowser::OnStateChange`로 바꿨습니다(항목 수·보기 모드는 알림이 없어 폴링 유지).
 
 2단계에서 결정한 사항:
 - 레이아웃은 이진 분할 트리이고, 분할선 번호는 트리 전위 순서입니다. 기본 레이아웃(4 패널 2×2, 세로 분할선 기준)은 분할선 0이 세로, 1·2가 각 열의 가로선이라 Q-Dir의 `SP0`/`SP1`/`SP2`와 대응합니다. 레이아웃을 바꾸면 비율은 그 레이아웃의 기본값(균등 분할)으로 돌아갑니다.
@@ -304,6 +305,17 @@ windowplacement=x;y;w;h|sw=1
 - **두 모드**: 패널별 트리는 켜면 처음 한 번만 만들고(안 쓰는 패널은 셸 컨트롤을 만들지 않음) 숨겨도 상태를 유지합니다. 공용 트리는 활성 패널을 따라가고, 트리에서 고르면 활성 패널이 이동합니다. 두 모드는 각자의 켬/끔 상태를 따로 저장해서 모드를 오가도 잃지 않습니다.
 - **저장**: `.mdr`의 `[Workspace]`에 `TreeMode`(0 패널별, 1 공용 — Q-Dir `tree_mode`의 의미와 같은지는 확인하지 못함), `SharedTree`, `SharedTreeSplit`, 각 `[PaneN]`에 `Tree`, `TreeSplit`(1/10000, 기본 2500 = Q-Dir `TreeNsplit` 기본값). 옵션 4종은 작업 공간이 아니라 `M-Dir.ini`의 `[Tree]`에 둡니다(모든 트리 공통 설정).
 - **보류**: 들여쓰기 옵션(내부 `SysTreeView32`에 `TVM_SETINDENT`를 보내야 함), 트리 항목 색상(6단계 색상 필터에서 `TVM_GETITEMRECT` + `HitTest`로 함, 분석 1.6 참고), 트리 안에서의 파일 작업·드래그 동작 점검(9단계).
+
+6단계에서 결정한 사항:
+- **목록 레이아웃**: `IExplorerBrowser.Initialize` 전에 `IFolderViewOptions.SetFolderViewOptions(FVO_VISTALAYOUT)`를 지정해 목록을 `SysListView32`로 만듭니다. 보기 프리셋 8종(큰 아이콘~내용)은 모두 셸이 받아들이고 그대로 보고합니다(내용 보기의 실제 모양은 확인하지 않음). 목록 모양은 Windows 11의 DirectUI 목록과 조금 다릅니다(Q-Dir도 같은 모양).
+- **필터 후크**: 브라우저에 `IObjectWithSite` 사이트를 달고, 셸 뷰가 `IServiceProvider`로 `ICommDlgBrowser`(2·3 포함)를 요청하면 돌려줍니다. 셸은 서비스 ID로 `ICommDlgBrowser`의 IID를 쓰고, **항목마다 한 번씩** 요청합니다. 호출은 UI 스레드에서 왔지만 필터 대리자는 불변으로 바꿔 치우고 폴더 캐시는 락으로 보호합니다. 필터가 비어 있으면 COM 호출 없이 바로 통과시킵니다.
+- **`CDBOSC_*` 값**: `SETFOCUS=0`, `KILLFOCUS=1`, `SELCHANGE=2`, `RENAME=3`, `STATECHANGE=4`. (처음에 SELCHANGE를 1로 잘못 알고 있었고, 상태 로그를 찍어 보고서야 바로잡았습니다.) 선택 변경은 즉시 반영하고, **항목 수·보기 모드는 셸이 알림을 주지 않아 250ms 폴링을 그대로 둡니다.**
+- **필터 의미(Q-Dir 0x456a3f/0x456b2b 기준)**: `;`·`,`로 구분한 와일드카드, 이름은 대소문자 무시. 패턴이 **하나이고 와일드카드가 없을 때만** `*패턴*`으로 감쌉니다. 제외(반전) 옵션. 폴더는 "폴더도" 옵션이 켜져 있을 때만 필터링합니다. 필터 막대를 닫으면 필터도 꺼집니다(보이지 않는 활성 필터가 없도록). 필터는 패널 단위로 모든 탭·폴더에 적용되고 작업 공간(`Filter`·`FilterNot`·`FilterAuto`·`FilterDirs`·`FilterBar`)에 저장됩니다.
+- **색상 규칙 의미(Q-Dir 0x46d863 기준)**: 규칙을 위에서부터 평가하며 속성(글자색·배경색·굵게)마다 **처음 값을 준 규칙**이 이깁니다(`-1` = 미설정). 그래서 `*` 같은 규칙을 맨 아래 두어도 위의 규칙을 덮지 않습니다. 선택된 행은 시스템 선택 색을 유지합니다(`CDIS_SELECTED`는 모든 행에 켜져 있어 믿을 수 없어서 `LVM_GETITEMSTATE`로 확인).
+- **색상 규칙 파일 형식**: M-Dir은 `M-Dir.ini`의 `[ColorFilter]`(`RuleN=패턴=사용=글자색=배경색=굵게`, 색은 `RRGGBB` 또는 `-1`)에 저장합니다. Q-Dir `[Filter2]`는 가져오기·내보내기 때 **패턴·사용·글자색만** 해석합니다. 뒤쪽 필드 4개(`-1=1=-1=0`)의 뜻을 디컴파일로 확정하지 못했고, 색 바이트 순서도 파서 함수를 확인하지 못해 `RRGGBB`(`FF0000`=빨강)로 가정했습니다. Q-Dir의 `*=0000BB` 전체 파일 파란색 규칙은 기본값에서 뺐습니다.
+- **`#BG`/`#BG-A`**: 목록 배경색(비활성/활성 패널)을 `LVM_SETBKCOLOR`로 적용합니다. 규칙의 글자색 칸이 배경색입니다.
+- **테스트 안정성**: xUnit이 테스트 클래스를 병렬로 돌리면서 여러 UI 스레드가 동시에 컨트롤을 만들 때 테스트 호스트가 한 번 `InvalidOperationException`(비동기 컬렉션 동시 수정)으로 중단됐습니다. WinForms 내부의 스레드 안전하지 않은 정적 상태(예: 모든 `ToolStrip` 목록)가 원인이라는 추정입니다(증명하지는 못함). `UiTest`가 UI 스레드를 한 번에 하나씩만 돌리도록 직렬화한 뒤 10회 연속 통과했습니다(전체 약 16초 → 30초). 실제 앱은 UI 스레드가 하나입니다.
+- **보류**: 트리 항목 색상(`INameSpaceTreeControl::HitTest`로 항목을 찾아 `NM_CUSTOMDRAW` 처리), 목록 Shift+휠 가로 스크롤, 정렬 열 강조 끄기(`LVM_SETSELECTEDCOLUMN(-1)`).
 
 ---
 

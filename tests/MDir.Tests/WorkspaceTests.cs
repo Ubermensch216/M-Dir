@@ -54,7 +54,7 @@ public class WorkspaceTests
         string text = workspace.ToIni().ToText();
 
         Assert.Contains("[Workspace]\r\nVersion=1\r\nLayout=10\r\nRatios=5000,5000,5000\r\n", text);
-        Assert.Contains("[Pane4]\r\nSelected=0\r\nTree=0\r\nTreeSplit=2500\r\nTabs=1\r\nTab1=%", text);
+        Assert.Contains("[Pane4]\r\nSelected=0\r\nTree=0\r\nTreeSplit=2500\r\nFilterBar=0\r\nTabs=1\r\nTab1=%", text);
         Assert.Contains("Tab1.ViewMode=4", text);
         Assert.Contains("TreeMode=0\r\nSharedTree=0\r\nSharedTreeSplit=2500\r\n", text);
     }

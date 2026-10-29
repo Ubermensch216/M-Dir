@@ -1,3 +1,4 @@
+using MDir.Features;
 using MDir.Layout;
 using MDir.Panes;
 using MDir.Settings;
@@ -21,12 +22,14 @@ internal sealed class MainForm : Form, IMessageFilter
     private ToolStripMenuItem _autoWorkspaceMenu = null!;
     private readonly Panel _workArea = new() { Dock = DockStyle.Fill };
     private readonly Splitter _sharedSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 80, MinExtra = 300, Visible = false };
-    private readonly TreeOptions _fallbackTreeOptions = new();
+    private readonly AppSettings _fallbackSettings = new();
     private FolderTreeControl? _sharedTree;
     private bool _sharedTreeMode;
     private bool _sharedTreeVisible;
     private int _sharedTreeSplit = Workspace.DefaultTreeSplit;
     private bool _applyingSharedWidth;
+    private ToolStripMenuItem _colorMenu = null!;
+    private ToolStripMenuItem _filterMenu = null!;
     private ToolStripMenuItem _treeMenu = null!;
     private ToolStripMenuItem _treePaneModeMenu = null!;
     private ToolStripMenuItem _treeSharedModeMenu = null!;
@@ -63,6 +66,10 @@ internal sealed class MainForm : Form, IMessageFilter
                     UpdateActivePaneState();
             };
             pane.Enter += (_, _) => ActivatePane(pane, focus: false);
+            pane.ViewFocused += (_, _) => ActivatePane(pane, focus: false);
+            pane.FilterCommitted += (_, pattern) => RememberFilter(pattern);
+            pane.ColorRules = ActiveColorRules;
+            pane.SetRecentFilters(Settings.RecentFilters);
         }
 
         _layoutPanel = new PaneLayoutPanel(_panes) { Dock = DockStyle.Fill };
@@ -301,6 +308,8 @@ internal sealed class MainForm : Form, IMessageFilter
         view.DropDownItems.Add(new ToolStripMenuItem("새로 고침(&R)", null, (_, _) => ActiveBrowser.RefreshView(), Keys.F5));
         view.DropDownItems.Add(new ToolStripSeparator());
         view.DropDownItems.AddRange(BuildTreeMenuItems());
+        view.DropDownItems.Add(new ToolStripSeparator());
+        view.DropDownItems.AddRange(BuildFilterMenuItems());
 
         var go = new ToolStripMenuItem("이동(&G)");
         go.DropDownItems.AddRange([_backMenu, _forwardMenu, _upMenu]);
@@ -355,7 +364,77 @@ internal sealed class MainForm : Form, IMessageFilter
         return menu;
     }
 
-    private TreeOptions TreeSettings => _profile?.Settings.Tree ?? _fallbackTreeOptions;
+    private AppSettings Settings => _profile?.Settings ?? _fallbackSettings;
+
+    private TreeOptions TreeSettings => Settings.Tree;
+
+    private ToolStripItem[] BuildFilterMenuItems()
+    {
+        _filterMenu = new ToolStripMenuItem("파일 필터(&I)", null, (_, _) => ToggleFilter(), Keys.Control | Keys.Shift | Keys.F);
+        _colorMenu = new ToolStripMenuItem("색상 필터 사용(&C)", null, (_, _) => SetColorFilterEnabled(!Settings.ColorFilterEnabled));
+        var edit = new ToolStripMenuItem("색상 필터 편집(&E)...", null, (_, _) => EditColorFilter());
+        return [_filterMenu, _colorMenu, edit];
+    }
+
+    /// <summary>The colour rules the panes use right now: null while colouring is switched off.</summary>
+    private ColorRuleSet? ActiveColorRules => Settings.ColorFilterEnabled ? Settings.ColorRules : null;
+
+    /// <summary>Shows the active pane's filter bar (and focuses it), or hides it, which also clears its filter.</summary>
+    internal void ToggleFilter()
+    {
+        if (_activePane.FilterBarVisible)
+        {
+            _activePane.FilterBarVisible = false;
+            _activePane.FocusBrowser();
+        }
+        else
+        {
+            _activePane.FocusFilter();
+        }
+
+        UpdateFilterMenu();
+    }
+
+    internal void SetColorFilterEnabled(bool enabled)
+    {
+        Settings.ColorFilterEnabled = enabled;
+        ApplyColorRules();
+        SaveSettings();
+    }
+
+    private void EditColorFilter()
+    {
+        using var dialog = new ColorFilterDialog(Settings.ColorRules);
+        if (dialog.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        Settings.ColorRules = dialog.Result;
+        ApplyColorRules();
+        SaveSettings();
+    }
+
+    private void ApplyColorRules()
+    {
+        foreach (PaneControl pane in _panes)
+            pane.ColorRules = ActiveColorRules;
+
+        UpdateFilterMenu();
+    }
+
+    private void RememberFilter(string pattern)
+    {
+        Settings.AddRecentFilter(pattern);
+        foreach (PaneControl pane in _panes)
+            pane.SetRecentFilters(Settings.RecentFilters);
+
+        SaveSettings();
+    }
+
+    private void UpdateFilterMenu()
+    {
+        _filterMenu.Checked = _activePane.FilterBarVisible;
+        _colorMenu.Checked = Settings.ColorFilterEnabled;
+    }
 
     private ToolStripItem[] BuildTreeMenuItems()
     {
@@ -623,5 +702,6 @@ internal sealed class MainForm : Form, IMessageFilter
 
         SyncSharedTree();
         UpdateTreeMenu();
+        UpdateFilterMenu();
     }
 }

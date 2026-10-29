@@ -1,4 +1,6 @@
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using MDir.Features;
 using MDir.Shell;
 
 namespace MDir.Panes;
@@ -24,6 +26,10 @@ public sealed class ExplorerBrowserHost : Control
     private int _iconSize = 16;
     private int _itemCount = -1;
     private int _selectedCount = -1;
+    private ColorListHook? _colorHook;
+    private ColorRuleSet? _colorRules;
+    private FileFilter _fileFilter = FileFilter.None;
+    private bool _isActivePane;
 
     /// <summary>HRESULT_FROM_WIN32(ERROR_BUSY).</summary>
     private const int HResultBusy = unchecked((int)0x800700AA);
@@ -55,6 +61,52 @@ public sealed class ExplorerBrowserHost : Control
 
     /// <summary>Raised when the view mode or icon size changes, including changes made from the shell's own menus.</summary>
     public event EventHandler? ViewModeChanged;
+
+    /// <summary>Raised when the shell view's list gets keyboard focus (also by a click inside it).</summary>
+    public event EventHandler? ViewFocused;
+
+    /// <summary>The object the shell view queries for item filtering and state notifications.</summary>
+    internal ShellViewSite ViewSite { get; } = new();
+
+    /// <summary>Colour rules for the list; null turns colouring off.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal ColorRuleSet? ColorRules
+    {
+        get => _colorRules;
+        set
+        {
+            _colorRules = value;
+            _colorHook?.RefreshAppearance();
+        }
+    }
+
+    /// <summary>Whether this pane is the active one, which selects the list background rule (#BG-A).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool IsActivePane
+    {
+        get => _isActivePane;
+        set
+        {
+            if (_isActivePane == value)
+                return;
+
+            _isActivePane = value;
+            _colorHook?.RefreshAppearance();
+        }
+    }
+
+    /// <summary>The name filter of this pane. Applied to every folder the pane shows.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal FileFilter FileFilter
+    {
+        get => _fileFilter;
+        set
+        {
+            _fileFilter = value;
+            ViewSite.Include = value.Compile();
+            RefreshView();
+        }
+    }
 
     public ShellLocation? CurrentLocation => _history.Current;
 
@@ -170,12 +222,23 @@ public sealed class ExplorerBrowserHost : Control
             return;
 
         _browser = (IExplorerBrowser)new ExplorerBrowserClass();
+
+        // Classic list layout (SysListView32) instead of the DirectUI one: only that list can be colour-coded by
+        // handling NM_CUSTOMDRAW, which is how Q-Dir does it. Must be set before Initialize.
+        if (_browser is IFolderViewOptions viewOptions)
+            viewOptions.SetFolderViewOptions(FolderViewOptions.VistaLayout, FolderViewOptions.VistaLayout);
+
         _sink = new EventSink(this);
         Marshal.ThrowExceptionForHR(_browser.Advise(_sink, out _adviseCookie));
 
         var rect = new NativeRect(0, 0, ClientSize.Width, ClientSize.Height);
         var settings = new FolderSettings { ViewMode = _viewMode };
         Marshal.ThrowExceptionForHR(_browser.Initialize(Handle, ref rect, ref settings));
+
+        // Lets the shell view find our ICommDlgBrowser (item filter, selection and focus notifications).
+        if (_browser is IObjectWithSite withSite)
+            withSite.SetSite(ViewSite);
+        ViewSite.StateChanged += OnViewStateChanged;
 
         // Pane-level view mode (like Q-Dir): don't let each folder restore Explorer's saved view state.
         _browser.SetOptions(ExplorerBrowserOptions.AlwaysNavigate | ExplorerBrowserOptions.NoTravelLog
@@ -198,6 +261,11 @@ public sealed class ExplorerBrowserHost : Control
             if (_adviseCookie != 0)
                 _browser.Unadvise(_adviseCookie);
 
+            (_browser as IObjectWithSite)?.SetSite(null);
+            ViewSite.StateChanged -= OnViewStateChanged;
+            ViewSite.Reset();
+            _colorHook?.Dispose();
+            _colorHook = null;
             _browser.Destroy();
             Marshal.ReleaseComObject(_browser);
             _browser = null;
@@ -328,10 +396,23 @@ public sealed class ExplorerBrowserHost : Control
         BeginInvoke(() => BrowseTo(location, kind));
     }
 
+    /// <summary>The shell view reports selection and focus changes here, so the status updates immediately.</summary>
+    private void OnViewStateChanged(uint change)
+    {
+        if (change == CommDlgState.SelectionChanged)
+            PollViewState();
+        else if (change == CommDlgState.SetFocus)
+            ViewFocused?.Invoke(this, EventArgs.Empty);
+    }
+
     private void OnViewCreated(object view)
     {
         _view = view as IShellView;
         _folderView = view as IFolderView2;
+
+        // A new shell view window exists for every folder: hook its list for colouring again.
+        _colorHook?.Dispose();
+        _colorHook = _view is null ? null : new ColorListHook(_view, () => _colorRules, () => _isActivePane);
         _folderView?.SetViewModeAndIconSize(_viewMode, _iconSize);
     }
 
@@ -367,8 +448,8 @@ public sealed class ExplorerBrowserHost : Control
         RunQueuedNavigation();
     }
 
-    // Stopgap until ICommDlgBrowser (stage 6, needed for IncludeObject filtering) provides OnStateChange:
-    // poll the cheap counters instead.
+    // Selection changes arrive through ICommDlgBrowser::OnStateChange; the item count and view mode (which the shell
+    // reports no event for, e.g. after the folder finished enumerating or a file appeared) are polled.
     private void PollViewState()
     {
         if (_folderView is null)

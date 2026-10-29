@@ -8,6 +8,13 @@ internal static partial class UiTest
 {
     public static readonly TimeSpan StepTimeout = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// One window thread at a time. xUnit runs test classes in parallel, and WinForms keeps process-wide state
+    /// (for example the static list of all ToolStrips) that is not safe against several UI threads creating
+    /// controls at once; that once crashed the test host. The real application has a single UI thread.
+    /// </summary>
+    private static readonly object UiGate = new();
+
     public const int WM_LBUTTONDOWN = 0x0201;
     public const int WM_LBUTTONUP = 0x0202;
     public const int WM_MOUSEMOVE = 0x0200;
@@ -17,6 +24,12 @@ internal static partial class UiTest
 
     /// <summary>Shows the form on a new STA thread, runs <paramref name="body"/> once it is shown, then closes it.</summary>
     public static void Run<TForm>(Func<TForm> createForm, Func<TForm, Task> body) where TForm : Form
+    {
+        lock (UiGate)
+            RunLocked(createForm, body);
+    }
+
+    private static void RunLocked<TForm>(Func<TForm> createForm, Func<TForm, Task> body) where TForm : Form
     {
         Exception? failure = null;
         var thread = new Thread(() =>
@@ -51,6 +64,12 @@ internal static partial class UiTest
     /// <summary>Runs <paramref name="body"/> on an STA thread without a message loop (for controls that are never shown).</summary>
     public static void RunSta(Action body)
     {
+        lock (UiGate)
+            RunStaLocked(body);
+    }
+
+    private static void RunStaLocked(Action body)
+    {
         Exception? failure = null;
         var thread = new Thread(() =>
         {
@@ -83,18 +102,39 @@ internal static partial class UiTest
 
     public static string SaveScreenshot(Form form, string fileName)
     {
-        using var bitmap = new Bitmap(form.Width, form.Height);
-        using (Graphics graphics = Graphics.FromImage(bitmap))
-        {
-            IntPtr hdc = graphics.GetHdc();
-            PrintWindow(form.Handle, hdc, PW_RENDERFULLCONTENT);
-            graphics.ReleaseHdc(hdc);
-        }
-
+        using Bitmap bitmap = Capture(form);
         string path = Path.Combine(AppContext.BaseDirectory, "screenshots", fileName);
         Directory.CreateDirectory(Path.GetDirectoryName(path)!);
         bitmap.Save(path, ImageFormat.Png);
         return path;
+    }
+
+    /// <summary>The window as it is drawn, including child windows (works for windows that are not in front).</summary>
+    public static Bitmap Capture(Form form)
+    {
+        var bitmap = new Bitmap(form.Width, form.Height);
+        using Graphics graphics = Graphics.FromImage(bitmap);
+        IntPtr hdc = graphics.GetHdc();
+        PrintWindow(form.Handle, hdc, PW_RENDERFULLCONTENT);
+        graphics.ReleaseHdc(hdc);
+        return bitmap;
+    }
+
+    /// <summary>Number of pixels within <paramref name="tolerance"/> of <paramref name="color"/> in each channel.</summary>
+    public static int CountPixels(Bitmap bitmap, Color color, int tolerance = 40)
+    {
+        int count = 0;
+        for (int y = 0; y < bitmap.Height; y++)
+        {
+            for (int x = 0; x < bitmap.Width; x++)
+            {
+                Color pixel = bitmap.GetPixel(x, y);
+                if (Math.Abs(pixel.R - color.R) <= tolerance && Math.Abs(pixel.G - color.G) <= tolerance && Math.Abs(pixel.B - color.B) <= tolerance)
+                    count++;
+            }
+        }
+
+        return count;
     }
 
     public static IntPtr MakePoint(int x, int y) => (IntPtr)((y << 16) | (x & 0xFFFF));
