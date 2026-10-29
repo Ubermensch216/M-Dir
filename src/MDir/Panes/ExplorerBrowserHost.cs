@@ -242,6 +242,34 @@ public sealed class ExplorerBrowserHost : Control
     /// <summary>The file system paths of the selected items (items without one are left out).</summary>
     internal IReadOnlyList<string> GetSelectedPaths() => [.. GetSelectedLocations().Select(location => location.FileSystemPath).OfType<string>()];
 
+    /// <summary>The file system paths of every item the list shows now (a filter hides items from it), in view order.</summary>
+    internal IReadOnlyList<string> GetAllItemPaths()
+    {
+        var paths = new List<string>();
+        Guid iid = typeof(IShellItemArray).GUID;
+        if (_folderView is null || _folderView.Items(Svgio.AllView, ref iid, out IntPtr array) < 0 || array == IntPtr.Zero)
+            return paths;
+
+        try
+        {
+            var items = (IShellItemArray)Marshal.GetObjectForIUnknown(array);
+            if (items.GetCount(out uint count) < 0)
+                return paths;
+
+            for (uint i = 0; i < count; i++)
+            {
+                if (items.GetItemAt(i, out IShellItem item) >= 0 && ShellItems.ToLocation(item)?.FileSystemPath is { } path)
+                    paths.Add(path);
+            }
+        }
+        finally
+        {
+            Marshal.Release(array);
+        }
+
+        return paths;
+    }
+
     /// <summary>The classic list of the shell view, or zero before it exists.</summary>
     private IntPtr ListWindow => _view is not null && _view.GetWindow(out IntPtr window) >= 0 ? NativeMethods.FindDescendant(window, "SysListView32") : IntPtr.Zero;
 

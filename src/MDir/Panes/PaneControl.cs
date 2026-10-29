@@ -36,6 +36,7 @@ internal sealed class PaneControl : Panel
     private readonly ToolStripButton _upButton;
     private readonly ToolStripStatusLabel _itemsLabel = new();
     private readonly ToolStripStatusLabel _selectionLabel = new();
+    private readonly ToolStripStatusLabel _sizeLabel = new();
     private readonly PaneFilterBar _filterBar = new() { Dock = DockStyle.Bottom, Visible = false };
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
     private readonly Splitter _treeSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 60, MinExtra = 120, Visible = false };
@@ -60,7 +61,7 @@ internal sealed class PaneControl : Panel
         _upButton = Glyphs.CreateButton(Glyphs.Up, "상위 폴더 (Alt+↑)", (_, _) => Browser.GoUp());
 
         var status = new StatusStrip { SizingGrip = false };
-        status.Items.AddRange([_itemsLabel, _selectionLabel]);
+        status.Items.AddRange([_itemsLabel, _selectionLabel, _sizeLabel]);
 
         // Z-order matters for docking: the list (Fill) is last, then the splitter, then the tree (Left) first.
         _content.Controls.Add(Browser);
@@ -632,6 +633,14 @@ internal sealed class PaneControl : Panel
     {
         Browser.FileFilter = _filterBar.Filter;
         UpdateStatus();
+    }
+
+    /// <summary>The size shown after the selection count (empty when none); set by the window while it measures the selection.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal string SizeText
+    {
+        get => _sizeLabel.Text ?? string.Empty;
+        set => _sizeLabel.Text = value;
     }
 
     private void UpdateStatus()

@@ -68,6 +68,9 @@ internal sealed class AppSettings
     /// <summary>The toolbar under the menu is shown.</summary>
     public bool ShowToolbar { get; set; } = true;
 
+    /// <summary>The status bar shows the size of the selected folders without being asked.</summary>
+    public bool AutoFolderSize { get; set; }
+
     /// <summary>File name filters typed before, newest first.</summary>
     public List<string> RecentFilters { get; } = [];
 
@@ -97,6 +100,7 @@ internal sealed class AppSettings
                 ColorFilterEnabled = ini.GetBool(ColorSection, "Enabled", true),
                 ColorRules = ColorRuleSet.Read(ini) ?? ColorRuleSet.CreateDefault(),
                 ShowToolbar = ini.GetBool(StartSection, nameof(ShowToolbar), true),
+                AutoFolderSize = ini.GetBool(StartSection, nameof(AutoFolderSize), false),
             };
             foreach ((string id, string keys) in ini.Entries(ShortcutSection))
                 settings.Shortcuts[id] = keys;
@@ -121,6 +125,7 @@ internal sealed class AppSettings
         var ini = IniFile.Load(path);
         ini.Set(StartSection, nameof(AutoWorkspace), AutoWorkspace);
         ini.Set(StartSection, nameof(ShowToolbar), ShowToolbar);
+        ini.Set(StartSection, nameof(AutoFolderSize), AutoFolderSize);
 
         // Only the changes are stored, so a default changed in a later version still reaches users who never touched it.
         ini.RemoveSection(ShortcutSection);

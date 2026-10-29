@@ -20,7 +20,7 @@ public enum CompareMode
     /// <summary>Equal when size and modification time match (within <see cref="FolderComparer.TimeTolerance"/>).</summary>
     Quick,
 
-    /// <summary>When size matches but the time differs, the contents are compared (SHA-256).</summary>
+    /// <summary>Files of the same size are compared byte for byte (SHA-256), whatever their times say. Slower: every such file is read.</summary>
     Content,
 }
 
@@ -105,7 +105,8 @@ internal static class FolderComparer
     {
         TimeSpan difference = left.LastWriteTimeUtc - right.LastWriteTimeUtc;
         bool sameTime = difference.Duration() <= TimeTolerance;
-        if (left.Length == right.Length && sameTime)
+        // Quick mode trusts size and time; content mode reads the bytes of every pair of the same size.
+        if (left.Length == right.Length && sameTime && mode == CompareMode.Quick)
             return CompareStatus.Same;
 
         if (left.Length == right.Length && mode == CompareMode.Content)
@@ -195,6 +196,28 @@ internal static class SyncPlanner
 
             string relativeFolder = Path.GetDirectoryName(entry.RelativePath) ?? string.Empty;
             copies.Add(new SyncCopy(source.FullName, Path.Combine(destinationRoot, relativeFolder), entry));
+        }
+
+        return copies;
+    }
+
+    /// <summary>
+    /// The copies for entries the user picked: whatever exists on the source side is copied over the other side, even
+    /// when the files merely "differ". Folders against files (<see cref="CompareStatus.TypeMismatch"/>) are never
+    /// overwritten this way, and equal items need no copy.
+    /// </summary>
+    public static IReadOnlyList<SyncCopy> PlanSelected(IEnumerable<CompareEntry> entries, string leftRoot, string rightRoot, SyncDirection direction)
+    {
+        bool forward = direction == SyncDirection.LeftToRight;
+        var copies = new List<SyncCopy>();
+        foreach (CompareEntry entry in entries)
+        {
+            FileSystemInfo? source = forward ? entry.Left : entry.Right;
+            if (direction == SyncDirection.TwoWay || source is null || entry.Status is CompareStatus.Same or CompareStatus.TypeMismatch)
+                continue;
+
+            string relativeFolder = Path.GetDirectoryName(entry.RelativePath) ?? string.Empty;
+            copies.Add(new SyncCopy(source.FullName, Path.Combine(forward ? rightRoot : leftRoot, relativeFolder), entry));
         }
 
         return copies;

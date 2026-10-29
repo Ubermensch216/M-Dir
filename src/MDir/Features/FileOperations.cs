@@ -14,16 +14,19 @@ internal sealed record FileOperationResult(bool Success, bool Aborted, string? E
 /// Copies, moves and deletes files through the shell's <c>IFileOperation</c>, the engine Explorer uses: it shows the
 /// progress dialog, asks what to do about name collisions, uses the Recycle Bin and records undo information.
 /// </summary>
-internal sealed class FileOperations(IntPtr ownerWindow = default, bool silent = false)
+internal sealed class FileOperations(IntPtr ownerWindow = default, bool silent = false, bool replaceExisting = false)
 {
     private const uint FileAttributeDirectory = 0x10;
 
     /// <summary>Copy and move keep undo information so Explorer-style Ctrl+Z works afterwards.</summary>
     private uint TransferFlags => FileOperationFlags.AllowUndo | FileOperationFlags.AddUndoRecord | QuietFlags;
 
-    /// <summary>For tests and scripted use: no dialogs, no prompts; a name collision gets a numbered name.</summary>
+    /// <summary>
+    /// For tests and scripted use: no dialogs, no prompts. A name collision gets a numbered name, or with
+    /// <c>replaceExisting</c> the existing item is overwritten.
+    /// </summary>
     private uint QuietFlags => silent
-        ? FileOperationFlags.Silent | FileOperationFlags.NoConfirmation | FileOperationFlags.NoErrorUi | FileOperationFlags.RenameOnCollision
+        ? FileOperationFlags.Silent | FileOperationFlags.NoConfirmation | FileOperationFlags.NoErrorUi | (replaceExisting ? 0 : FileOperationFlags.RenameOnCollision)
         : 0;
 
     public FileOperationResult Copy(IReadOnlyList<string> sources, string destinationFolder) =>

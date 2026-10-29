@@ -69,6 +69,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 if (pane == _activePane)
                 {
                     SchedulePreview();
+                    UpdateSizeForSelection();
                     RefreshCommandStates();
                 }
             };
@@ -82,6 +83,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _layoutPanel = new PaneLayoutPanel(_panes) { Dock = DockStyle.Fill };
         _layoutPanel.LayoutChanged += (_, _) => OnPaneLayoutChanged();
 
+        InitializeToolHooks();
         RegisterCommands();
         MenuStrip menu = BuildMenu();
         ToolStrip toolbar = BuildToolbar();

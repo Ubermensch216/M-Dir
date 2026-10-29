@@ -199,6 +199,8 @@ internal sealed partial class MainForm
         // Help
         Add("help.about", "M-Dir 정보(&A)", help, ShowAbout);
 
+        RegisterToolCommands();
+
         _commands.ImportCustom(Settings.Shortcuts);
 
         void AddTreeOption(string name, string text, Func<TreeOptions, bool> get, Action<TreeOptions, bool> set) =>
@@ -240,7 +242,7 @@ internal sealed partial class MainForm
         ToolStripItem[] File() =>
         [
             Item("file.newWorkspace"), Item("file.openWorkspace"), Item("file.saveWorkspace"), Item("file.saveWorkspaceAs"), Sep(),
-            Item("file.newFolder"), Sep(),
+            Item("file.newFolder"), Item("file.exportList"), Sep(),
             Item("file.autoWorkspace"), Sep(),
             Item("file.exit"),
         ];
@@ -267,7 +269,7 @@ internal sealed partial class MainForm
             Sub("트리 옵션(&O)", Item("view.treeOption.lines"), Item("view.treeOption.fullRow"), Item("view.treeOption.singleClick"), Item("view.treeOption.autoExpand")),
             Sep(),
             Item("view.filter"), Item("view.colorFilter"), Item("view.editColorFilter"), Sep(),
-            Item("view.preview"),
+            Item("view.preview"), Item("view.autoFolderSize"),
         ];
 
         ToolStripItem[] Go() => [Item("go.back"), Item("go.forward"), Item("go.up"), Sep(), Item("go.address")];
@@ -287,6 +289,7 @@ internal sealed partial class MainForm
 
         ToolStripItem[] Tools() =>
         [
+            Item("tools.folderSize"), Item("tools.multiRename"), Item("tools.compareFolders"), Item("tools.hash"), Item("tools.createHardLink"), Sep(),
             Item("tools.openCmd"), Item("tools.openPowerShell"), Item("tools.openExplorer"), Sep(),
             Item("tools.shortcuts"),
         ];
