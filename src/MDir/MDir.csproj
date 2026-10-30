@@ -12,6 +12,7 @@
     <AssemblyName>M-Dir</AssemblyName>
     <Product>M-Dir</Product>
     <Version>0.1.0</Version>
+    <ApplicationIcon>Assets\M-Dir.ico</ApplicationIcon>
   </PropertyGroup>
 
   <!-- dotnet publish -c Release -r win-x64 : a single M-Dir.exe (see publish.ps1).
@@ -28,6 +29,7 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <EmbeddedResource Include="Assets\M-Dir.ico" LogicalName="M-Dir.ico" />
     <InternalsVisibleTo Include="MDir.Tests" />
   </ItemGroup>
 

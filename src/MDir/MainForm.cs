@@ -49,6 +49,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     public MainForm(ShellLocation? startFolder = null, Workspace? workspace = null, string? workspacePath = null, AppProfile? profile = null)
     {
         Text = "M-Dir";
+        Icon = AppIcon();
         Size = new Size(1280, 860);
         StartPosition = FormStartPosition.CenterScreen;
         _profile = profile;

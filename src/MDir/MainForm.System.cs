@@ -216,12 +216,14 @@ internal sealed partial class MainForm
 
     private static Icon AppIcon()
     {
+        // The icon is embedded (Assets\M-Dir.ico), so it is found in tests and single-file builds alike.
         try
         {
-            if (Environment.ProcessPath is { } path && Icon.ExtractAssociatedIcon(path) is { } icon)
-                return icon;
+            using Stream? stream = typeof(MainForm).Assembly.GetManifestResourceStream("M-Dir.ico");
+            if (stream is not null)
+                return new Icon(stream);
         }
-        catch (Exception ex) when (ex is ArgumentException or IOException or UnauthorizedAccessException)
+        catch (Exception ex) when (ex is ArgumentException or IOException)
         {
         }
 

@@ -80,11 +80,6 @@ def draw_icon(px):
     front.paste(gradient, (0, 0), mask)
     img.alpha_composite(front)
 
-    # Highlight line along the top edge of the front.
-    if not small:
-        edge = ImageDraw.Draw(img)
-        edge.rounded_rectangle([14 * k, 80 * k, 242 * k, 94 * k], radius=8 * k, outline=(255, 240, 200, 150), width=max(1, round(2 * k)))
-
     # The M: a white outline first so it stands out on any background, then navy.
     polygon = scaled(m_polygon(small))
     letter = Image.new('L', (s, s), 0)
