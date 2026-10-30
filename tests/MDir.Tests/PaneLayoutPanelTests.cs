@@ -67,6 +67,28 @@ public class PaneLayoutPanelTests
         });
     }
 
+    [Fact]
+    public void HoveringSplitter_DoesNotLeakResizeCursorToChildPanes()
+    {
+        RunSta(() =>
+        {
+            using var panel = CreatePanel(out Control[] panes);
+            var tabStrip = new Panel();
+            panes[2].Controls.Add(tabStrip);
+
+            SplitterPlacement horizontal = panel.Arrangement!.Splitters.First(s => s.Direction == SplitDirection.Rows);
+            SendMessage(panel.Handle, WM_MOUSEMOVE, 0, MakePoint(horizontal.Bar.Left + 10, horizontal.Bar.Top + 1));
+
+            Assert.Equal(Cursors.HSplit, panel.Cursor);
+            Assert.Equal(Cursors.Default, panes[2].Cursor);
+            Assert.Equal(Cursors.Default, tabStrip.Cursor);
+
+            const int WM_MOUSELEAVE = 0x02A3;
+            SendMessage(panel.Handle, WM_MOUSELEAVE, 0, 0);
+            Assert.Equal(Cursors.Default, panel.Cursor);
+        });
+    }
+
     private static PaneLayoutPanel CreatePanel(out Control[] panes)
     {
         panes = [.. Enumerable.Range(0, PaneLayout.MaxPanes).Select(i => new Label { Text = $"Pane {i + 1}" })];

@@ -27,7 +27,10 @@ public sealed class PaneLayoutPanel : Control
         _panes = panes;
         SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer | ControlStyles.ResizeRedraw, true);
         foreach (Control pane in panes)
+        {
+            pane.Cursor = Cursors.Default;
             Controls.Add(pane);
+        }
 
         ApplyVisibility();
     }
@@ -138,10 +141,18 @@ public sealed class PaneLayoutPanel : Control
         _drag = null;
     }
 
+    protected override void OnMouseLeave(EventArgs e)
+    {
+        base.OnMouseLeave(e);
+        if (_drag is null)
+            Cursor = Cursors.Default;
+    }
+
     protected override void OnMouseCaptureChanged(EventArgs e)
     {
         base.OnMouseCaptureChanged(e);
         _drag = null;
+        Cursor = Cursors.Default;
     }
 
     /// <summary>Double-clicking a splitter restores its default position.</summary>
