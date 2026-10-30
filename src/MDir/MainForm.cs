@@ -1,6 +1,8 @@
 using MDir.Commands;
 using MDir.Features;
+using MDir.Integration;
 using MDir.Layout;
+using MDir.Localization;
 using MDir.Panes;
 using MDir.Settings;
 using MDir.Shell;
@@ -31,6 +33,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private readonly FavoritesStore? _favorites;
     private readonly Splitter _previewSplitter = new() { Dock = DockStyle.Right, Width = 5, MinSize = 150, MinExtra = 300, Visible = false };
     private readonly System.Windows.Forms.Timer _previewTimer = new() { Interval = 150 };
+    private readonly System.Windows.Forms.Timer _slideshowTimer = new() { Interval = 3000 };
     private PreviewPane? _previewPane;
     private bool _previewVisible;
     private int _previewSplit = Workspace.DefaultPreviewSplit;
@@ -74,6 +77,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
                 }
             };
             pane.Favorites = _favorites;
+            pane.Browser.FolderSizes = FolderSizeSource;
+            pane.Browser.FolderSizeColumn = Settings.FolderSizeColumn;
             pane.ManageFavoritesRequested += (_, _) => ManageFavorites();
             pane.FilterCommitted += (_, pattern) => RememberFilter(pattern);
             pane.ColorRules = ActiveColorRules;
@@ -105,6 +110,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         };
         _previewSplitter.SplitterMoved += (_, _) => OnPreviewSplitterMoved();
         _previewTimer.Tick += (_, _) => RefreshPreview();
+        _slideshowTimer.Tick += (_, _) => OnSlideshowTick();
 
         // The clipboard and other programs change what Paste etc. can do without any event here, so the toolbar is polled.
         _stateTimer.Tick += (_, _) => RefreshCommandStates();
@@ -121,6 +127,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         OnPaneLayoutChanged();
         UpdateActivePaneState();
         RefreshAllMenus();
+        ApplyAppearance(processMode: false);
+        ApplyUiScale();
+        foreach (PaneControl pane in _panes)
+            pane.ApplyLanguage();
     }
 
     internal string? WorkspacePath => _workspacePath;
@@ -224,6 +234,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
     /// <summary>Clicking anywhere in a pane activates it, including inside the shell's own child windows.</summary>
     bool IMessageFilter.PreFilterMessage(ref Message m)
     {
+        if (m.Msg == ListScroll.WM_MOUSEWHEEL && ListScroll.TryScrollSideways(m.HWnd, m.WParam))
+            return true;
+
         if (m.Msg is NativeMethods.WM_LBUTTONDOWN or NativeMethods.WM_RBUTTONDOWN
             or NativeMethods.WM_MBUTTONDOWN or NativeMethods.WM_XBUTTONDOWN)
         {
@@ -243,6 +256,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        AppAppearance.SetTitleBar(Handle, IsDarkMode);
         Application.AddMessageFilter(this);
         _stateTimer.Start();
     }
@@ -260,6 +274,11 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         // Each pane's folder was set by ApplyWorkspace; its shell view browses there when the pane is first shown.
         _activePane.FocusBrowser();
+        if (_startMinimized)
+        {
+            _startMinimized = false;
+            WindowState = FormWindowState.Minimized;
+        }
     }
 
     protected override void OnFormClosing(FormClosingEventArgs e)
@@ -283,7 +302,16 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (disposing)
         {
             _previewTimer.Dispose();
+            _slideshowTimer.Dispose();
+            _folderSizeColumn?.Dispose();
             _stateTimer.Dispose();
+            if (_tray is not null)
+            {
+                _tray.Visible = false;
+                _tray.Dispose();
+            }
+
+            _baseFont = null;
         }
 
         base.Dispose(disposing);
@@ -317,7 +345,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
 
         using var dialog = new FavoritesDialog(_favorites);
-        dialog.ShowDialog(this);
+        ShowLocalized(dialog);
     }
 
     internal PreviewPane? PreviewPane => _previewPane;
@@ -338,6 +366,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             // Created on first use; added last so it is docked first and the splitter finds it.
             _previewPane = new PreviewPane { Dock = DockStyle.Right, Width = 300 };
+            Loc.Apply(_previewPane);
+            _previewPane.NavigateRequested += (_, step) => StepPreviewItem(step, imagesOnly: false);
+            _previewPane.SlideshowChanged += (_, _) => UpdateSlideshow();
             _workArea.Controls.Add(_previewPane);
         }
 
@@ -354,6 +385,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             // Hidden: stop work and let a preview handler release its file.
             _previewTimer.Stop();
+            if (_previewPane is not null)
+                _previewPane.SlideshowActive = false;
             _previewPane?.Clear();
         }
     }
@@ -383,6 +416,65 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             // A preview that fails must never take the window down; the pane shows its own message for known failures.
         }
+    }
+
+    /// <summary>Milliseconds between two pictures of the slideshow.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal int SlideshowIntervalMs
+    {
+        get => _slideshowTimer.Interval;
+        set => _slideshowTimer.Interval = Math.Max(100, value);
+    }
+
+    private void UpdateSlideshow()
+    {
+        if (_previewPane?.SlideshowActive == true)
+            _slideshowTimer.Start();
+        else
+            _slideshowTimer.Stop();
+    }
+
+    private void OnSlideshowTick()
+    {
+        if (!_previewVisible || _previewPane is not { SlideshowActive: true })
+        {
+            _slideshowTimer.Stop();
+            return;
+        }
+
+        // Only pictures are shown; after the last one it starts again from the first.
+        StepPreviewItem(1, imagesOnly: true, wrap: true);
+    }
+
+    /// <summary>
+    /// Selects the item before or after the focused one in the active pane, which the preview then shows. With
+    /// <paramref name="imagesOnly"/> other files are skipped; with <paramref name="wrap"/> the search goes on at the
+    /// other end of the list. Returns false when there is nothing to move to.
+    /// </summary>
+    internal bool StepPreviewItem(int step, bool imagesOnly, bool wrap = false)
+    {
+        if (CurrentFolderPath is null || step == 0)
+            return false;
+
+        IReadOnlyList<string> paths = ActiveBrowser.GetAllItemPaths();
+        int count = paths.Count;
+        if (count == 0)
+            return false;
+
+        int start = ActiveBrowser.FocusedItemIndex;
+        for (int i = 1; i <= count; i++)
+        {
+            int index = start < 0 ? (step > 0 ? i - 1 : count - i) : start + Math.Sign(step) * i;
+            if (wrap)
+                index = (index % count + count) % count;
+            else if (index < 0 || index >= count)
+                return false;
+
+            if (!imagesOnly || PreviewPane.IsImagePath(paths[index]))
+                return ActiveBrowser.SelectItem(index);
+        }
+
+        return false;
     }
 
     private void ApplyPreviewWidth()
@@ -443,7 +535,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
     private void EditColorFilter()
     {
         using var dialog = new ColorFilterDialog(Settings.ColorRules);
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (ShowLocalized(dialog) != DialogResult.OK)
             return;
 
         Settings.ColorRules = dialog.Result;
@@ -455,6 +547,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
     {
         foreach (PaneControl pane in _panes)
             pane.ColorRules = ActiveColorRules;
+        if (_sharedTree is not null)
+            _sharedTree.ColorRules = ActiveColorRules;
 
         RefreshCommandStates();
     }
@@ -520,7 +614,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         bool show = _sharedTreeMode && _sharedTreeVisible;
         if (show && _sharedTree is null)
         {
-            _sharedTree = new FolderTreeControl { Dock = DockStyle.Left, Options = TreeSettings };
+            _sharedTree = new FolderTreeControl { Dock = DockStyle.Left, Options = TreeSettings, DarkMode = IsDarkMode, ColorRules = ActiveColorRules };
             _sharedTree.LocationSelected += (_, e) => ActiveBrowser.Navigate(e.Location);
             _workArea.Controls.Add(_sharedTree);
         }
@@ -595,7 +689,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
     private void OpenWorkspace()
     {
-        using var dialog = new OpenFileDialog { Title = "작업 공간 열기", Filter = WorkspaceFilter, DefaultExt = "mdr" };
+        using var dialog = new OpenFileDialog { Title = Loc.T("작업 공간 열기"), Filter = Loc.T(WorkspaceFilter), DefaultExt = "mdr" };
         if (dialog.ShowDialog(this) != DialogResult.OK)
             return;
 
@@ -623,8 +717,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
     {
         using var dialog = new SaveFileDialog
         {
-            Title = "작업 공간 저장",
-            Filter = WorkspaceFilter,
+            Title = Loc.T("작업 공간 저장"),
+            Filter = Loc.T(WorkspaceFilter),
             DefaultExt = "mdr",
             AddExtension = true,
             FileName = _workspacePath is null ? "workspace.mdr" : Path.GetFileName(_workspacePath),

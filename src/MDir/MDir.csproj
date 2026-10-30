@@ -14,6 +14,16 @@
     <Version>0.1.0</Version>
   </PropertyGroup>
 
+  <!-- dotnet publish -c Release -r win-x64 : one self-contained M-Dir.exe that needs no installed .NET (see publish.ps1). -->
+  <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
+    <SelfContained>true</SelfContained>
+    <PublishSingleFile>true</PublishSingleFile>
+    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
+    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <DebugType>none</DebugType>
+    <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
+  </PropertyGroup>
+
   <ItemGroup>
     <InternalsVisibleTo Include="MDir.Tests" />
   </ItemGroup>

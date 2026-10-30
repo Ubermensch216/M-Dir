@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using MDir.Features;
 using MDir.Layout;
+using MDir.Localization;
 using MDir.Settings;
 using MDir.Shell;
 
@@ -41,6 +42,8 @@ internal sealed class PaneControl : Panel
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
     private readonly Splitter _treeSplitter = new() { Dock = DockStyle.Left, Width = 5, MinSize = 60, MinExtra = 120, Visible = false };
     private FolderTreeControl? _tree;
+    private bool _darkMode;
+    private ColorRuleSet? _colorRules;
     private TreeOptions _treeOptions = new();
     private int _treeSplit = Workspace.DefaultTreeSplit;
     private bool _treeEnabled;
@@ -97,7 +100,7 @@ internal sealed class PaneControl : Panel
             SyncTree();
         };
         Browser.NavigationFailed += (_, e) => MessageBox.Show(FindForm(),
-            $"'{e.Location.DisplayName}' 위치를 열 수 없습니다.", "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            Loc.F("'{0}' 위치를 열 수 없습니다.", e.Location.DisplayName), "M-Dir", MessageBoxButtons.OK, MessageBoxIcon.Warning);
         Browser.ItemsChanged += (_, _) => UpdateStatus();
         Browser.ViewFocused += (_, _) => ViewFocused?.Invoke(this, EventArgs.Empty);
         Browser.SelectionChanged += (_, _) => SelectionChanged?.Invoke(this, EventArgs.Empty);
@@ -184,6 +187,20 @@ internal sealed class PaneControl : Panel
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal FavoritesStore? Favorites { get; set; }
 
+    /// <summary>Dark file list and folder tree (the rest of the pane follows the WinForms color mode).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool DarkMode
+    {
+        get => _darkMode;
+        set
+        {
+            _darkMode = value;
+            Browser.DarkMode = value;
+            if (_tree is not null)
+                _tree.DarkMode = value;
+        }
+    }
+
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal TreeOptions TreeOptions
     {
@@ -217,7 +234,13 @@ internal sealed class PaneControl : Panel
     internal ColorRuleSet? ColorRules
     {
         get => Browser.ColorRules;
-        set => Browser.ColorRules = value;
+        set
+        {
+            Browser.ColorRules = value;
+            _colorRules = value;
+            if (_tree is not null)
+                _tree.ColorRules = value;
+        }
     }
 
     /// <summary>The pane's name filter (<see cref="FileFilter.None"/> when off).</summary>
@@ -289,7 +312,8 @@ internal sealed class PaneControl : Panel
             _treeEnabled,
             _treeSplit,
             Browser.FileFilter.IsActive ? Browser.FileFilter : null,
-            _filterBarShown);
+            _filterBarShown,
+            Browser.CaptureViewStates() is { Count: > 0 } viewStates ? viewStates : null);
     }
 
     /// <summary>
@@ -309,6 +333,7 @@ internal sealed class PaneControl : Panel
         if (tabs.Count == 0)
             tabs.Add(new PaneTab(Workspace.DefaultLocation));
 
+        Browser.LoadViewStates(state.ViewStates);
         List<PaneTab> old = [.. Tabs];
         _tabStrip.Replace(tabs, state.SelectedTab);
         _currentTab = _tabStrip.SelectedTab!;
@@ -389,7 +414,7 @@ internal sealed class PaneControl : Panel
         // Created on first use: panes that never show a tree never create the shell control.
         if (show && _tree is null)
         {
-            _tree = new FolderTreeControl { Dock = DockStyle.Left, Options = _treeOptions };
+            _tree = new FolderTreeControl { Dock = DockStyle.Left, Options = _treeOptions, DarkMode = _darkMode, ColorRules = _colorRules };
             _tree.LocationSelected += (_, e) => Browser.Navigate(e.Location);
             _content.Controls.Add(_tree);
         }
@@ -462,21 +487,21 @@ internal sealed class PaneControl : Panel
     private void ShowTabMenu(PaneTab? tab, Point location)
     {
         var menu = new ContextMenuStrip();
-        menu.Items.Add(new ToolStripMenuItem("새 탭(&N)", null, (_, _) => NewTab()) { ShortcutKeyDisplayString = "Ctrl+T" });
+        menu.Items.Add(new ToolStripMenuItem(Loc.T("새 탭(&N)"), null, (_, _) => NewTab()) { ShortcutKeyDisplayString = "Ctrl+T" });
         if (tab is not null)
         {
-            menu.Items.Add(new ToolStripMenuItem("탭 복제(&D)", null, (_, _) =>
+            menu.Items.Add(new ToolStripMenuItem(Loc.T("탭 복제(&D)"), null, (_, _) =>
             {
                 _tabStrip.SelectedIndex = Tabs.ToList().IndexOf(tab);
                 DuplicateTab();
             }));
             menu.Items.Add(new ToolStripSeparator());
-            menu.Items.Add(new ToolStripMenuItem("탭 닫기(&C)", null, (_, _) => CloseTab(tab))
+            menu.Items.Add(new ToolStripMenuItem(Loc.T("탭 닫기(&C)"), null, (_, _) => CloseTab(tab))
             {
                 Enabled = Tabs.Count > 1,
                 ShortcutKeyDisplayString = "Ctrl+W",
             });
-            menu.Items.Add(new ToolStripMenuItem("다른 탭 모두 닫기(&O)", null, (_, _) => CloseOtherTabs(tab)) { Enabled = Tabs.Count > 1 });
+            menu.Items.Add(new ToolStripMenuItem(Loc.T("다른 탭 모두 닫기(&O)"), null, (_, _) => CloseOtherTabs(tab)) { Enabled = Tabs.Count > 1 });
         }
 
         menu.Closed += (_, _) => BeginInvoke(menu.Dispose);
@@ -645,7 +670,17 @@ internal sealed class PaneControl : Panel
 
     private void UpdateStatus()
     {
-        _itemsLabel.Text = Browser.FileFilter.IsActive ? $"항목 {Browser.ItemCount:N0}개 (필터됨)" : $"항목 {Browser.ItemCount:N0}개";
-        _selectionLabel.Text = Browser.SelectedCount > 0 ? $"|  {Browser.SelectedCount:N0}개 선택됨" : string.Empty;
+        _itemsLabel.Text = Loc.F(Browser.FileFilter.IsActive ? "항목 {0:N0}개 (필터됨)" : "항목 {0:N0}개", Browser.ItemCount);
+        _selectionLabel.Text = Browser.SelectedCount > 0 ? Loc.F("|  {0:N0}개 선택됨", Browser.SelectedCount) : string.Empty;
+    }
+
+    /// <summary>The item count text of the status bar ("항목 12개" / "12 items").</summary>
+    internal string StatusText => _itemsLabel.Text ?? string.Empty;
+
+    /// <summary>Translates the pane's fixed texts (tool tips, filter bar) and its status line into the current language.</summary>
+    internal void ApplyLanguage()
+    {
+        Loc.Apply(this);
+        UpdateStatus();
     }
 }

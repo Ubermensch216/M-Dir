@@ -1,4 +1,5 @@
 using MDir.Features;
+using MDir.Integration;
 
 namespace MDir.Settings;
 
@@ -48,6 +49,8 @@ internal sealed class AppSettings
     private const string ColorSection = "ColorFilter";
     private const string ShortcutSection = "Shortcuts";
     private const string RecentSection = "RecentFilters";
+    private const string AppearanceSection = "Appearance";
+    private const string ToolbarSection = "Toolbar";
     private const int MaxRecentFilters = 20;
 
     /// <summary>Save the workspace on exit and restore it at the next start (Q-Dir's <c>start.qdr</c> behaviour).</summary>
@@ -70,6 +73,30 @@ internal sealed class AppSettings
 
     /// <summary>The status bar shows the size of the selected folders without being asked.</summary>
     public bool AutoFolderSize { get; set; }
+
+    /// <summary>The Size column of the file lists also shows the size of folders (worked out in the background).</summary>
+    public bool FolderSizeColumn { get; set; }
+
+    /// <summary>The list tints the column it is sorted by (always off in dark mode).</summary>
+    public bool SortColumnHighlight { get; set; } = true;
+
+    /// <summary>Only one window runs; opening a folder again hands it to that window (needs a restart to take effect).</summary>
+    public bool SingleInstance { get; set; }
+
+    /// <summary>Minimizing hides the window and leaves an icon in the notification area.</summary>
+    public bool MinimizeToTray { get; set; }
+
+    /// <summary>Language of the menus and dialogs: "ko", "en", or the name of a language pack file. Defaults to Korean on a Korean Windows, English elsewhere.</summary>
+    public string Language { get; set; } = System.Globalization.CultureInfo.CurrentUICulture.TwoLetterISOLanguageName == "ko" ? "ko" : "en";
+
+    /// <summary>Light, dark, or follow Windows.</summary>
+    public AppColorMode ColorMode { get; set; } = AppColorMode.System;
+
+    /// <summary>Size of menus, toolbar, tabs and address bars in percent of the normal size (100, 125, 150, 200).</summary>
+    public int UiScale { get; set; } = 100;
+
+    /// <summary>Command ids of the toolbar buttons in order ("-" = separator, "@layouts" = the layout drop-down); empty = the default toolbar.</summary>
+    public List<string> ToolbarItems { get; } = [];
 
     /// <summary>File name filters typed before, newest first.</summary>
     public List<string> RecentFilters { get; } = [];
@@ -101,7 +128,18 @@ internal sealed class AppSettings
                 ColorRules = ColorRuleSet.Read(ini) ?? ColorRuleSet.CreateDefault(),
                 ShowToolbar = ini.GetBool(StartSection, nameof(ShowToolbar), true),
                 AutoFolderSize = ini.GetBool(StartSection, nameof(AutoFolderSize), false),
+                SingleInstance = ini.GetBool(StartSection, nameof(SingleInstance), false),
+                SortColumnHighlight = ini.GetBool(StartSection, nameof(SortColumnHighlight), true),
+                FolderSizeColumn = ini.GetBool(StartSection, nameof(FolderSizeColumn), false),
+                Language = ini.Get(AppearanceSection, nameof(Language)) is { Length: > 0 } language && language.All(c => char.IsLetterOrDigit(c) || c is '-' or '_')
+                    ? language
+                    : new AppSettings().Language,
+                MinimizeToTray = ini.GetBool(StartSection, nameof(MinimizeToTray), false),
+                ColorMode = Enum.TryParse(ini.Get(AppearanceSection, nameof(ColorMode)), true, out AppColorMode mode) && Enum.IsDefined(mode) ? mode : AppColorMode.System,
+                UiScale = AppAppearance.NormalizeScale(ini.GetInt(AppearanceSection, nameof(UiScale), 100)),
             };
+            if (ini.Get(ToolbarSection, "Items") is { Length: > 0 } toolbar)
+                settings.ToolbarItems.AddRange(toolbar.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
             foreach ((string id, string keys) in ini.Entries(ShortcutSection))
                 settings.Shortcuts[id] = keys;
 
@@ -126,6 +164,17 @@ internal sealed class AppSettings
         ini.Set(StartSection, nameof(AutoWorkspace), AutoWorkspace);
         ini.Set(StartSection, nameof(ShowToolbar), ShowToolbar);
         ini.Set(StartSection, nameof(AutoFolderSize), AutoFolderSize);
+        ini.Set(StartSection, nameof(SingleInstance), SingleInstance);
+        ini.Set(StartSection, nameof(SortColumnHighlight), SortColumnHighlight);
+        ini.Set(StartSection, nameof(FolderSizeColumn), FolderSizeColumn);
+        ini.Set(StartSection, nameof(MinimizeToTray), MinimizeToTray);
+        ini.Set(AppearanceSection, nameof(ColorMode), ColorMode.ToString());
+        ini.Set(AppearanceSection, nameof(Language), Language);
+        ini.Set(AppearanceSection, nameof(UiScale), UiScale);
+        if (ToolbarItems.Count > 0)
+            ini.Set(ToolbarSection, "Items", string.Join(',', ToolbarItems));
+        else
+            ini.RemoveSection(ToolbarSection);
 
         // Only the changes are stored, so a default changed in a later version still reaches users who never touched it.
         ini.RemoveSection(ShortcutSection);

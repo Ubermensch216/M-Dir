@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Globalization;
+using MDir.Localization;
 using MDir.Shell;
 
 namespace MDir.Features;
@@ -24,6 +25,9 @@ internal enum PreviewKind
 
     /// <summary>A shell preview handler (Office, PDF, HTML...).</summary>
     Handler,
+
+    /// <summary>The media player (video and audio files).</summary>
+    Media,
 }
 
 /// <summary>
@@ -46,6 +50,10 @@ internal sealed class PreviewPane : Panel
     private readonly Label _title = new() { Dock = DockStyle.Top, AutoSize = false, Height = 22, Padding = new Padding(6, 3, 6, 0), AutoEllipsis = true };
     private readonly Label _detail = new() { Dock = DockStyle.Top, AutoSize = false, Height = 20, Padding = new Padding(6, 0, 6, 0), AutoEllipsis = true, ForeColor = SystemColors.GrayText };
     private readonly ToolStrip _imageBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
+    private readonly ToolStrip _textBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
+    private readonly ToolStripButton _wrapButton = new("줄 바꿈") { CheckOnClick = true, ToolTipText = "긴 줄을 창 너비에서 줄 바꿈", DisplayStyle = ToolStripItemDisplayStyle.Text };
+    private readonly ToolStripTextBox _findBox = new() { AutoSize = false, Width = 150, ToolTipText = "찾을 글 (Enter: 다음, Shift+Enter: 이전)" };
+    private readonly ToolStripButton _slideshowButton = new("슬라이드쇼") { CheckOnClick = true, ToolTipText = "몇 초마다 다음 그림을 보여 줍니다", DisplayStyle = ToolStripItemDisplayStyle.Text };
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
     private Control? _view;
     private int _version;
@@ -53,8 +61,25 @@ internal sealed class PreviewPane : Panel
     public PreviewPane()
     {
         _title.Font = new Font(Font, FontStyle.Bold);
+        var findPrevious = new ToolStripButton("▲", null, (_, _) => FindNext(_findBox.Text, forward: false)) { ToolTipText = "이전 찾기", DisplayStyle = ToolStripItemDisplayStyle.Text };
+        var findNext = new ToolStripButton("▼", null, (_, _) => FindNext(_findBox.Text, forward: true)) { ToolTipText = "다음 찾기", DisplayStyle = ToolStripItemDisplayStyle.Text };
+        _wrapButton.CheckedChanged += (_, _) => SetWordWrap(_wrapButton.Checked);
+        _findBox.KeyDown += (_, e) =>
+        {
+            if (e.KeyCode == Keys.Enter)
+            {
+                FindNext(_findBox.Text, forward: !e.Shift);
+                e.Handled = e.SuppressKeyPress = true;
+            }
+        };
+        _textBar.Items.AddRange([_wrapButton, new ToolStripSeparator(), new ToolStripLabel("찾기"), _findBox, findPrevious, findNext]);
+        _slideshowButton.CheckedChanged += (_, _) => SlideshowChanged?.Invoke(this, EventArgs.Empty);
         _imageBar.Items.AddRange(
         [
+            new ToolStripButton("◀", null, (_, _) => NavigateRequested?.Invoke(this, -1)) { ToolTipText = "이전 항목 (←)", DisplayStyle = ToolStripItemDisplayStyle.Text },
+            new ToolStripButton("▶", null, (_, _) => NavigateRequested?.Invoke(this, 1)) { ToolTipText = "다음 항목 (→)", DisplayStyle = ToolStripItemDisplayStyle.Text },
+            _slideshowButton,
+            new ToolStripSeparator(),
             CreateButton("맞춤", "창에 맞춤 (더블클릭: 100%와 전환)", (view) => view.FitToWindow()),
             CreateButton("100%", "실제 크기", (view) => view.ActualSize()),
             CreateButton("＋", "확대 (마우스 휠)", (view) => view.ZoomBy(1.25)),
@@ -63,12 +88,73 @@ internal sealed class PreviewPane : Panel
             CreateButton("↷", "오른쪽으로 회전", (view) => view.Rotate(clockwise: true)),
         ]);
 
-        // Z-order: fill last, so the bars dock first (top to bottom: title, detail, image bar).
+        // Z-order: fill last, so the bars dock first (top to bottom: title, detail, image bar, text bar).
         Controls.Add(_content);
+        Controls.Add(_textBar);
         Controls.Add(_imageBar);
         Controls.Add(_detail);
         Controls.Add(_title);
         _content.BringToFront();
+    }
+
+    /// <summary>Raised with -1 or +1 when the user asks for the previous or next item (the window moves the selection).</summary>
+    public event EventHandler<int>? NavigateRequested;
+
+    /// <summary>Raised when the slideshow button was switched.</summary>
+    public event EventHandler? SlideshowChanged;
+
+    /// <summary>The slideshow button is on: the window shows the next image every few seconds.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool SlideshowActive
+    {
+        get => _slideshowButton.Checked;
+        set => _slideshowButton.Checked = value;
+    }
+
+    internal bool TextBarVisible => _textBar.Visible;
+
+    internal bool WordWrapOn => _view is TextBox { WordWrap: true };
+
+    /// <summary>True for the image types the built-in viewer opens (by file extension).</summary>
+    internal static bool IsImagePath(string path) => ImageExtensions.Contains(Path.GetExtension(path));
+
+    /// <summary>Wraps long lines of the text viewer at the window width, or scrolls them sideways.</summary>
+    public void SetWordWrap(bool wrap)
+    {
+        if (_wrapButton.Checked != wrap)
+            _wrapButton.Checked = wrap;
+
+        if (_view is TextBox box)
+        {
+            box.WordWrap = wrap;
+            box.ScrollBars = wrap ? ScrollBars.Vertical : ScrollBars.Both;
+        }
+    }
+
+    /// <summary>
+    /// Selects the next (or previous) occurrence of <paramref name="text"/> in the text viewer, ignoring case, and
+    /// wraps around at the end. Returns false when there is no text viewer or the text does not occur.
+    /// </summary>
+    public bool FindNext(string text, bool forward)
+    {
+        if (_view is not TextBox box || text.Length == 0)
+            return false;
+
+        string content = box.Text;
+        int index = forward
+            ? content.IndexOf(text, Math.Min(box.SelectionStart + box.SelectionLength, content.Length), StringComparison.OrdinalIgnoreCase)
+            : content.AsSpan(0, Math.Min(box.SelectionStart, content.Length)).LastIndexOf(text, StringComparison.OrdinalIgnoreCase);
+        if (index < 0)
+        {
+            // Nothing further on: start again from the other end.
+            index = forward ? content.IndexOf(text, StringComparison.OrdinalIgnoreCase) : content.LastIndexOf(text, StringComparison.OrdinalIgnoreCase);
+            if (index < 0)
+                return false;
+        }
+
+        box.Select(index, text.Length);
+        box.ScrollToCaret();
+        return true;
     }
 
     public PreviewKind Kind { get; private set; }
@@ -92,13 +178,13 @@ internal sealed class PreviewPane : Panel
 
         if (selectedCount == 0 || item is null)
         {
-            ShowMessage("선택한 항목이 없습니다.");
+            ShowMessage(Loc.T("선택한 항목이 없습니다."));
             return;
         }
 
         if (selectedCount > 1)
         {
-            ShowMessage($"{selectedCount:N0}개 항목이 선택되었습니다.");
+            ShowMessage(Loc.F("{0:N0}개 항목이 선택되었습니다.", selectedCount));
             return;
         }
 
@@ -116,12 +202,12 @@ internal sealed class PreviewPane : Panel
             else if (File.Exists(path))
                 await ShowFileAsync(item, path, version);
             else
-                ShowMessage("항목을 찾을 수 없습니다.");
+                ShowMessage(Loc.T("항목을 찾을 수 없습니다."));
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
             if (version == _version)
-                ShowMessage($"미리 볼 수 없습니다: {ex.Message}");
+                ShowMessage(Loc.F("미리 볼 수 없습니다: {0}", ex.Message));
         }
     }
 
@@ -138,6 +224,7 @@ internal sealed class PreviewPane : Panel
         _title.Text = string.Empty;
         _detail.Text = string.Empty;
         _imageBar.Visible = false;
+        _textBar.Visible = false;
     }
 
     private async Task ShowFileAsync(ShellLocation item, string path, int version)
@@ -161,16 +248,28 @@ internal sealed class PreviewPane : Panel
                 var view = new ImageView { Dock = DockStyle.Fill };
                 view.SetImage(bitmap);
                 SetView(view, PreviewKind.Image);
-                SetHeader(name, $"{type} · {bitmap.Width}×{bitmap.Height} · {size} · 내장 뷰어");
+                SetHeader(name, Loc.F("{0} · {1}×{2} · {3} · 내장 뷰어", type, bitmap.Width, bitmap.Height, size));
                 _imageBar.Visible = true;
                 return;
             }
 
-            ShowInfo(name, type, FileFacts(file, type), "이미지를 열 수 없습니다.");
+            ShowInfo(name, type, FileFacts(file, type), Loc.T("이미지를 열 수 없습니다."));
             return;
         }
 
-        if (TextFile.IsKnownText(path))
+        if (MediaView.IsMedia(path))
+        {
+            var player = new MediaView { Dock = DockStyle.Fill };
+            SetView(player, PreviewKind.Media);
+            if (player.TryOpen(path))
+            {
+                SetHeader(name, Loc.F("{0} · {1} · 미디어 플레이어 (재생 단추로 시작)", type, size));
+                return;
+            }
+
+            SetView(null, PreviewKind.None);
+        }
+        else if (TextFile.IsKnownText(path))
         {
             TextPreviewData? text = await LoadOrNull(() => TextFile.Read(path));
             if (version != _version)
@@ -203,7 +302,7 @@ internal sealed class PreviewPane : Panel
         }
 
         if (version == _version)
-            ShowInfo(name, type, FileFacts(file, type), "이 형식은 미리 볼 수 없습니다.");
+            ShowInfo(name, type, FileFacts(file, type), Loc.T("이 형식은 미리 볼 수 없습니다."));
     }
 
     private async Task ShowFolderAsync(ShellLocation item, string path, int version)
@@ -224,7 +323,7 @@ internal sealed class PreviewPane : Panel
         if (version != _version)
             return;
 
-        string items = count < 0 ? "읽을 수 없음" : count > FolderCountLimit ? $"{FolderCountLimit:N0}개 이상" : $"{count:N0}개";
+        string items = count < 0 ? Loc.T("읽을 수 없음") : count > FolderCountLimit ? Loc.F("{0:N0}개 이상", FolderCountLimit) : Loc.F("{0:N0}개", count);
         ShowInfo(directory.Name.Length > 0 ? directory.Name : path, type,
         [
             ("이름", directory.Name.Length > 0 ? directory.Name : path),
@@ -237,20 +336,23 @@ internal sealed class PreviewPane : Panel
 
     private void ShowText(string name, string type, string size, TextPreviewData data)
     {
+        bool wrap = _wrapButton.Checked;
         var box = new TextBox
         {
             Dock = DockStyle.Fill,
             Multiline = true,
             ReadOnly = true,
-            WordWrap = false,
-            ScrollBars = ScrollBars.Both,
+            WordWrap = wrap,
+            ScrollBars = wrap ? ScrollBars.Vertical : ScrollBars.Both,
             BorderStyle = BorderStyle.None,
             BackColor = SystemColors.Window,
+            HideSelection = false,
             Font = new Font("Consolas", 10f),
             Text = data.Text,
         };
         box.Select(0, 0);
         SetView(box, PreviewKind.Text);
+        _textBar.Visible = true;
         SetHeader(name, $"{type} · {size} · {data.EncodingName}{(data.Truncated ? $" · 앞부분 {FormatSize(TextFile.DefaultLimit)}만 표시" : string.Empty)} · 내장 뷰어");
     }
 
@@ -276,7 +378,7 @@ internal sealed class PreviewPane : Panel
         foreach ((string label, string value) in facts)
         {
             int row = table.RowCount++;
-            table.Controls.Add(new Label { Text = label, AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 3, 12, 3) }, 0, row);
+            table.Controls.Add(new Label { Text = Loc.T(label), AutoSize = true, ForeColor = SystemColors.GrayText, Margin = new Padding(3, 3, 12, 3) }, 0, row);
             table.Controls.Add(new Label { Text = value, AutoSize = true, MaximumSize = new Size(2000, 0), Margin = new Padding(3) }, 1, row);
         }
 
@@ -288,7 +390,7 @@ internal sealed class PreviewPane : Panel
     [
         ("이름", file.Name),
         ("종류", type),
-        ("크기", $"{FormatSize(file.Length)} ({file.Length:N0}바이트)"),
+        ("크기", Loc.F("{0} ({1:N0}바이트)", FormatSize(file.Length), file.Length)),
         ("수정한 날짜", file.LastWriteTime.ToString("g", CultureInfo.CurrentCulture)),
         ("위치", file.DirectoryName ?? string.Empty),
     ];
@@ -332,7 +434,7 @@ internal sealed class PreviewPane : Panel
 
     internal static string FormatSize(long bytes)
     {
-        string[] units = ["바이트", "KB", "MB", "GB", "TB"];
+        string[] units = [Loc.T("바이트"), "KB", "MB", "GB", "TB"];
         double value = bytes;
         int unit = 0;
         while (value >= 1024 && unit < units.Length - 1)

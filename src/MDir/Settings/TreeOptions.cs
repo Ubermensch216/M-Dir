@@ -16,8 +16,15 @@ internal sealed class TreeOptions
     /// <summary>The folder shown in the list is expanded in the tree as well as selected.</summary>
     public bool AutoExpand { get; set; } = true;
 
+    /// <summary>Indentation of each tree level in pixels; 0 keeps the Windows default.</summary>
+    public int Indent { get; set; }
+
+    /// <summary>The indentation steps offered in the menu (0 = Windows default).</summary>
+    public static readonly int[] IndentChoices = [0, 12, 24, 32];
+
     public static TreeOptions Read(IniFile ini) => new()
     {
+        Indent = ini.GetInt(Section, nameof(Indent), 0) is var indent && indent >= 5 && indent <= 64 ? indent : 0,
         Lines = ini.GetBool(Section, nameof(Lines), true),
         FullRowSelect = ini.GetBool(Section, nameof(FullRowSelect), false),
         SingleClickExpand = ini.GetBool(Section, nameof(SingleClickExpand), false),
@@ -30,5 +37,6 @@ internal sealed class TreeOptions
         ini.Set(Section, nameof(FullRowSelect), FullRowSelect);
         ini.Set(Section, nameof(SingleClickExpand), SingleClickExpand);
         ini.Set(Section, nameof(AutoExpand), AutoExpand);
+        ini.Set(Section, nameof(Indent), Indent);
     }
 }

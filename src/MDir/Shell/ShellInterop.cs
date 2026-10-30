@@ -177,6 +177,13 @@ internal interface IShellView
     [PreserveSig] int EnableModeless(int fEnable);
     [PreserveSig] int UIActivate(uint uState);
     [PreserveSig] int Refresh();
+    [PreserveSig] int CreateViewWindow(IntPtr psvPrevious, IntPtr pfs, IntPtr psb, IntPtr prcView, out IntPtr phWnd);
+    [PreserveSig] int DestroyViewWindow();
+    [PreserveSig] int GetCurrentInfo(IntPtr pfs);
+    [PreserveSig] int AddPropertySheetPages(uint dwReserved, IntPtr pfn, IntPtr lparam);
+    [PreserveSig] int SaveViewState();
+    [PreserveSig] int SelectItem(IntPtr pidlItem, uint uFlags);
+    [PreserveSig] int GetItemObject(uint uItem, ref Guid riid, out IntPtr ppv);
 }
 
 // IFolderView2 flattened with its IFolderView base methods, up to SetViewModeAndIconSize/GetViewModeAndIconSize.
@@ -297,6 +304,9 @@ internal static partial class NativeMethods
     [LibraryImport("user32.dll")]
     public static partial IntPtr GetWindow(IntPtr hWnd, uint uCmd);
 
+    [LibraryImport("user32.dll")]
+    public static partial IntPtr GetParent(IntPtr hWnd);
+
     public const uint GW_CHILD = 5;
     public const uint GW_HWNDNEXT = 2;
 
@@ -308,7 +318,16 @@ internal static partial class NativeMethods
     public const uint LVM_EDITLABEL = 0x1076;
     public const int LVIS_SELECTED = 0x2;
     public const uint LVM_SETTEXTBKCOLOR = 0x1026;
+    public const uint LVM_SETTEXTCOLOR = 0x1024;
+    public const uint LVM_GETHEADER = 0x101F;
+    public const uint LVM_SETSELECTEDCOLUMN = 0x108C;
+    public const uint LVM_GETSELECTEDCOLUMN = 0x10AE;
+    public const uint TVM_GETINDENT = 0x1106;
+    public const uint TVM_SETINDENT = 0x1107;
+    public const uint TVM_SETBKCOLOR = 0x111D;
+    public const uint TVM_SETTEXTCOLOR = 0x111E;
     public const int COLOR_WINDOW = 5;
+    public const int COLOR_WINDOWTEXT = 8;
     public const uint RDW_INVALIDATE = 0x1;
     public const uint RDW_ERASE = 0x4;
     public const uint RDW_ALLCHILDREN = 0x80;

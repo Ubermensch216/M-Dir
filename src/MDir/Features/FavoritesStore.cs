@@ -189,6 +189,41 @@ internal sealed class FavoritesStore
         return ShellLinks.Read(linkPath);
     }
 
+    /// <summary>
+    /// Copies the shortcuts and folders of another favorites folder (for example Q-Dir's <c>Favoriten</c>) into
+    /// <paramref name="folder"/>. A <c>Quick-Link</c> folder in the source is merged into this store's Quick-Link
+    /// folder; other files and links to folders are left out. Returns the number of shortcuts copied.
+    /// </summary>
+    public int ImportFrom(string sourceDirectory, string folder)
+    {
+        EnsureInside(folder);
+        if (!Directory.Exists(sourceDirectory) || SamePath(sourceDirectory, folder) || IsInside(folder, sourceDirectory) && !IsInside(sourceDirectory, Root))
+            return 0;
+
+        Directory.CreateDirectory(folder);
+        int copied = 0;
+        foreach (string file in Directory.EnumerateFiles(sourceDirectory, "*" + LinkExtension))
+        {
+            string target = UniquePath(folder, Path.GetFileName(file));
+            File.Copy(file, target);
+            AppendToOrder(folder, Path.GetFileName(target));
+            copied++;
+        }
+
+        foreach (string directory in Directory.EnumerateDirectories(sourceDirectory))
+        {
+            if (new DirectoryInfo(directory).Attributes.HasFlag(FileAttributes.ReparsePoint))
+                continue;
+
+            string name = Path.GetFileName(directory);
+            bool quickLink = SamePath(folder, Root) && string.Equals(name, QuickLinkFolderName, StringComparison.OrdinalIgnoreCase);
+            string destination = quickLink ? QuickLinkFolder : CreateFolder(folder, name);
+            copied += ImportFrom(directory, destination);
+        }
+
+        return copied;
+    }
+
     /// <summary>Makes a text a valid, non-empty file name.</summary>
     public static string SanitizeName(string name)
     {

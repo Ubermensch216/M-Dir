@@ -1,3 +1,4 @@
+using MDir.Localization;
 using MDir.Shell;
 
 namespace MDir.Features;
@@ -41,12 +42,28 @@ internal sealed class FavoritesMenu
         }
     }
 
+    /// <summary>Opens every shortcut directly inside <paramref name="folder"/> in its own new tab; returns how many opened.</summary>
+    public int OpenAllInTabs(string folder)
+    {
+        int opened = 0;
+        foreach (FavoriteEntry entry in _store.List(folder).Where(entry => !entry.IsFolder))
+        {
+            if (_store.Read(entry.Path)?.Target is { } target)
+            {
+                _open(target, true);
+                opened++;
+            }
+        }
+
+        return opened;
+    }
+
     /// <summary>The fixed commands: add to favorites, add to Quick-Link, manage.</summary>
     public ToolStripItem[] CreateCommands() =>
     [
-        new ToolStripMenuItem("현재 폴더를 즐겨찾기에 추가(&A)", null, (_, _) => AddCurrent(_store.Root)),
-        new ToolStripMenuItem("현재 폴더를 퀵링크에 추가(&Q)", null, (_, _) => AddCurrent(_store.QuickLinkFolder)),
-        new ToolStripMenuItem("즐겨찾기 정리(&O)...", null, (_, _) => _manage()),
+        new ToolStripMenuItem(Loc.T("현재 폴더를 즐겨찾기에 추가(&A)"), null, (_, _) => AddCurrent(_store.Root)),
+        new ToolStripMenuItem(Loc.T("현재 폴더를 퀵링크에 추가(&Q)"), null, (_, _) => AddCurrent(_store.QuickLinkFolder)),
+        new ToolStripMenuItem(Loc.T("즐겨찾기 정리(&O)..."), null, (_, _) => _manage()),
     ];
 
     /// <summary>Appends the favorites themselves (the root folder's entries) to <paramref name="items"/>.</summary>
@@ -79,7 +96,7 @@ internal sealed class FavoritesMenu
         IReadOnlyList<FavoriteEntry> entries = _store.List(folder);
         if (entries.Count == 0)
         {
-            items.Add(new ToolStripMenuItem("(비어 있음)") { Enabled = false });
+            items.Add(new ToolStripMenuItem(Loc.T("(비어 있음)")) { Enabled = false });
             return;
         }
 
@@ -90,7 +107,12 @@ internal sealed class FavoritesMenu
     private ToolStripMenuItem CreateFolderItem(FavoriteEntry entry)
     {
         bool quickLink = _store.IsQuickLinkFolder(entry.Path);
-        var item = new ToolStripMenuItem(quickLink ? "퀵링크" : entry.Name) { Image = LoadIcon(_store, entry) };
+        var item = new ToolStripMenuItem(quickLink ? Loc.T("퀵링크") : entry.Name) { Image = LoadIcon(_store, entry), ToolTipText = Loc.T("Ctrl+클릭: 안의 즐겨찾기를 모두 새 탭으로 열기") };
+        item.Click += (_, _) =>
+        {
+            if ((Control.ModifierKeys & Keys.Control) != 0)
+                OpenAllInTabs(entry.Path);
+        };
 
         // Filled when opened, so a big favorites tree costs nothing until it is looked at.
         item.DropDownItems.Add(new ToolStripMenuItem("…"));
@@ -110,7 +132,7 @@ internal sealed class FavoritesMenu
         {
             Image = LoadIcon(_store, entry),
             Enabled = target is not null,
-            ToolTipText = target?.DisplayName ?? "대상을 찾을 수 없는 바로 가기",
+            ToolTipText = target?.DisplayName ?? Loc.T("대상을 찾을 수 없는 바로 가기"),
         };
 
         bool middle = false;

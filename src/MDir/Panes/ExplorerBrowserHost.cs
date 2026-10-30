@@ -30,6 +30,15 @@ public sealed class ExplorerBrowserHost : Control
     private ColorRuleSet? _colorRules;
     private FileFilter _fileFilter = FileFilter.None;
     private bool _isActivePane;
+    private bool _darkMode;
+    private bool _hideSortHighlight;
+    private FolderSizeColumnService? _folderSizes;
+    private bool _folderSizeColumn;
+    private bool _sizeRedrawQueued;
+    private int _folderSizeDraws;
+    private Dictionary<Guid, FolderViewState> _viewStates = [];
+    private Guid? _stateKind;
+    private FolderViewState? _stateBaseline;
 
     /// <summary>HRESULT_FROM_WIN32(ERROR_BUSY).</summary>
     private const int HResultBusy = unchecked((int)0x800700AA);
@@ -96,6 +105,195 @@ public sealed class ExplorerBrowserHost : Control
             _isActivePane = value;
             _colorHook?.RefreshAppearance();
         }
+    }
+
+    /// <summary>Dark scroll bars, background and text in the file list.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool DarkMode
+    {
+        get => _darkMode;
+        set
+        {
+            if (_darkMode == value)
+                return;
+
+            _darkMode = value;
+            _colorHook?.RefreshAppearance();
+        }
+    }
+
+    /// <summary>Where the Size column gets folder sizes from; shared by all panes.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal FolderSizeColumnService? FolderSizes
+    {
+        get => _folderSizes;
+        set
+        {
+            if (_folderSizes is not null)
+                _folderSizes.Changed -= OnFolderSizesChanged;
+
+            _folderSizes = value;
+            if (value is not null)
+                value.Changed += OnFolderSizesChanged;
+        }
+    }
+
+    /// <summary>The Size column shows the size of folders too (details view only; the sizes are worked out in the background).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool FolderSizeColumn
+    {
+        get => _folderSizeColumn;
+        set
+        {
+            if (_folderSizeColumn == value)
+                return;
+
+            _folderSizeColumn = value;
+            if (!value)
+                _folderSizes?.CancelPending();
+            _colorHook?.RefreshAppearance();
+        }
+    }
+
+    /// <summary>How many folder sizes were drawn into the list so far (tests).</summary>
+    internal int FolderSizeDraws => _folderSizeDraws;
+
+    private void OnFolderSizesChanged()
+    {
+        // Many folders can finish within a moment: one redraw covers them all.
+        if (!IsHandleCreated || IsDisposed || _sizeRedrawQueued)
+            return;
+
+        _sizeRedrawQueued = true;
+        try
+        {
+            BeginInvoke(() =>
+            {
+                _sizeRedrawQueued = false;
+                _colorHook?.RefreshAppearance();
+            });
+        }
+        catch (InvalidOperationException)
+        {
+            _sizeRedrawQueued = false;
+        }
+    }
+
+    private sealed class SizeSource(ExplorerBrowserHost owner) : IFolderSizeSource
+    {
+        public bool Enabled => owner._folderSizeColumn && owner._folderSizes is not null;
+
+        public string? CurrentFolder => owner.CurrentLocation?.FileSystemPath;
+
+        public string? GetText(string folderPath)
+        {
+            FolderSizeColumnService? service = owner._folderSizes;
+            if (service is null)
+                return null;
+
+            if (service.TryGet(folderPath, out FolderSizeResult? result) && result is not null)
+                return FolderSizeColumnService.Format(result);
+
+            service.Request(folderPath);
+            return "…";
+        }
+
+        public void Drawn() => owner._folderSizeDraws++;
+    }
+
+    /// <summary>Turns off the tint of the column the list is sorted by (always off in dark mode).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool HideSortHighlight
+    {
+        get => _hideSortHighlight;
+        set
+        {
+            if (_hideSortHighlight == value)
+                return;
+
+            _hideSortHighlight = value;
+            _colorHook?.RefreshAppearance();
+        }
+    }
+
+    /// <summary>
+    /// Columns and sort order the user chose, per kind of folder (file system folders, This PC...). They are applied
+    /// when a folder of that kind opens, and saved with the workspace. A folder that was left as the shell opened it
+    /// stores nothing, so the shell's own defaults (e.g. the Downloads folder's) are not copied to other folders.
+    /// </summary>
+    internal IReadOnlyDictionary<Guid, FolderViewState> CaptureViewStates()
+    {
+        StoreCurrentViewState();
+        return new Dictionary<Guid, FolderViewState>(_viewStates);
+    }
+
+    /// <summary>The columns and sort order the list shows now; null before a view exists.</summary>
+    internal FolderViewState? CaptureCurrentViewState() => _view is null ? null : ViewStateInterop.Capture(_view);
+
+    /// <summary>Shows the list with these columns and this sort order.</summary>
+    internal void ApplyViewState(FolderViewState state)
+    {
+        if (_view is not null)
+            ViewStateInterop.Apply(_view, state);
+    }
+
+    internal void LoadViewStates(IReadOnlyDictionary<Guid, FolderViewState>? states) =>
+        _viewStates = states is null ? [] : new Dictionary<Guid, FolderViewState>(states);
+
+    /// <summary>Remembers the shown folder's columns and sort when the user changed them since the folder opened.</summary>
+    private void StoreCurrentViewState()
+    {
+        if (_view is null || _stateKind is not { } kind || _stateBaseline is null)
+            return;
+
+        if (ViewStateInterop.Capture(_view) is { } current && !current.Equals(_stateBaseline))
+        {
+            _viewStates[kind] = current;
+            _stateBaseline = current;
+        }
+    }
+
+    /// <summary>
+    /// The shell sets its own sort while it fills a view, so applying the remembered one inside the navigation event is
+    /// overwritten. It is applied once the message loop is idle again, and only if this is still the shown view.
+    /// </summary>
+    private void ScheduleStoredViewState()
+    {
+        _stateKind = null;
+        _stateBaseline = null;
+        IShellView? view = _view;
+        if (view is null || !IsHandleCreated)
+            return;
+
+        BeginInvoke(() =>
+        {
+            if (ReferenceEquals(_view, view))
+                ApplyStoredViewState();
+        });
+    }
+
+    /// <summary>A folder finished opening: show it the way the user last set up folders of its kind, then note how it looks.</summary>
+    private void ApplyStoredViewState()
+    {
+        _stateKind = null;
+        _stateBaseline = null;
+        if (_view is null || ViewStateInterop.GetFolderKind(_view) is not { } kind)
+            return;
+
+        if (_viewStates.TryGetValue(kind, out FolderViewState? state))
+        {
+            try
+            {
+                ViewStateInterop.Apply(_view, state);
+            }
+            catch (Exception ex) when (ex is COMException or InvalidCastException)
+            {
+                // A shell extension view that refuses its columns keeps its own; the sort order is not worth an error.
+            }
+        }
+
+        _stateKind = kind;
+        _stateBaseline = ViewStateInterop.Capture(_view);
     }
 
     /// <summary>The name filter of this pane. Applied to every folder the pane shows.</summary>
@@ -246,6 +444,9 @@ public sealed class ExplorerBrowserHost : Control
     internal IReadOnlyList<string> GetAllItemPaths()
     {
         var paths = new List<string>();
+        if (_folderView is not null && CurrentLocation?.FileSystemPath is { } directory && ItemPathsByIndex(directory) is { } ordered)
+            return ordered;
+
         Guid iid = typeof(IShellItemArray).GUID;
         if (_folderView is null || _folderView.Items(Svgio.AllView, ref iid, out IntPtr array) < 0 || array == IntPtr.Zero)
             return paths;
@@ -270,6 +471,35 @@ public sealed class ExplorerBrowserHost : Control
         return paths;
     }
 
+    /// <summary>
+    /// The items of a file system folder by their position in the list, so the order is the one on screen (sorted and
+    /// filtered); the item array of <c>SVGIO_ALLVIEW</c> does not follow the sort. Null when the names cannot be read.
+    /// </summary>
+    private List<string>? ItemPathsByIndex(string directory)
+    {
+        if (_folderView is null || ShellFolderItems.GetFolder(_folderView) is not { } folder || _folderView.ItemCount(Svgio.AllView, out int count) < 0)
+            return null;
+
+        var paths = new List<string>(count);
+        for (int i = 0; i < count; i++)
+        {
+            if (_folderView.Item(i, out IntPtr pidl) < 0 || pidl == IntPtr.Zero)
+                continue;
+
+            try
+            {
+                if (ShellFolderItems.GetName(folder, pidl) is { } name)
+                    paths.Add(Path.Combine(directory, name));
+            }
+            finally
+            {
+                Marshal.FreeCoTaskMem(pidl);
+            }
+        }
+
+        return paths;
+    }
+
     /// <summary>The classic list of the shell view, or zero before it exists.</summary>
     private IntPtr ListWindow => _view is not null && _view.GetWindow(out IntPtr window) >= 0 ? NativeMethods.FindDescendant(window, "SysListView32") : IntPtr.Zero;
 
@@ -287,6 +517,12 @@ public sealed class ExplorerBrowserHost : Control
         NativeMethods.SetFocus(list);
         return NativeMethods.SendMessage(list, NativeMethods.LVM_EDITLABEL, (IntPtr)index, IntPtr.Zero) != IntPtr.Zero;
     }
+
+    /// <summary>The shell has a file operation of this program to undo (a copy, move, rename or delete).</summary>
+    internal bool CanUndo => _view is not null && BackgroundMenu.InvokeVerb(_view, Handle, "undo", invoke: false);
+
+    /// <summary>Undoes the last file operation the shell recorded, like Explorer's Ctrl+Z; false when there is none.</summary>
+    internal bool Undo() => _view is not null && BackgroundMenu.InvokeVerb(_view, Handle, "undo");
 
     /// <summary>Runs a shell verb ("properties", "copy"...) on the selected items.</summary>
     internal bool InvokeVerb(string verb) => _folderView?.InvokeVerbOnSelection(verb) >= 0;
@@ -455,6 +691,7 @@ public sealed class ExplorerBrowserHost : Control
     {
         if (disposing)
             _pollTimer.Dispose();
+            FolderSizes = null;
 
         base.Dispose(disposing);
     }
@@ -588,7 +825,7 @@ public sealed class ExplorerBrowserHost : Control
 
         // A new shell view window exists for every folder: hook its list for colouring again.
         _colorHook?.Dispose();
-        _colorHook = _view is null ? null : new ColorListHook(_view, () => _colorRules, () => _isActivePane);
+        _colorHook = _view is null ? null : new ColorListHook(_view, () => _colorRules, () => _isActivePane, () => _darkMode, () => _hideSortHighlight, new SizeSource(this));
         _folderView?.SetViewModeAndIconSize(_viewMode, _iconSize);
     }
 
@@ -612,6 +849,9 @@ public sealed class ExplorerBrowserHost : Control
 
         _pending = PendingNavigation.None;
         _itemCount = _selectedCount = -1;
+        ScheduleStoredViewState();
+        if (_darkMode)
+            _colorHook?.RefreshAppearance();
         NavigationCompleted?.Invoke(this, EventArgs.Empty);
         PollViewState();
         SelectionChanged?.Invoke(this, EventArgs.Empty);
@@ -661,7 +901,13 @@ public sealed class ExplorerBrowserHost : Control
     [ComVisible(true)]
     private sealed class EventSink(ExplorerBrowserHost owner) : IExplorerBrowserEvents
     {
-        public int OnNavigationPending(IntPtr pidlFolder) => 0;
+        public int OnNavigationPending(IntPtr pidlFolder)
+        {
+            owner._folderSizes?.CancelPending();
+            // The old view is still alive here: this is the last moment to read what the user did to it.
+            owner.StoreCurrentViewState();
+            return 0;
+        }
 
         public int OnViewCreated(object psv)
         {

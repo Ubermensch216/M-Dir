@@ -6,10 +6,18 @@ namespace MDir.Commands;
 /// </summary>
 internal sealed class Command(string id, string text, Action execute)
 {
+    private static readonly System.Text.RegularExpressions.Regex AccessKeySuffix = new(@"\(&.\)", System.Text.RegularExpressions.RegexOptions.Compiled);
+
     public string Id { get; } = id;
 
-    /// <summary>Menu text with the access key marked by '&amp;'.</summary>
-    public string Text { get; } = text;
+    /// <summary>The Korean menu text, which is also the key of its translation.</summary>
+    public string TextKey { get; } = text;
+
+    /// <summary>Menu text in the current language, with the access key marked by '&amp;'.</summary>
+    public string Text => Localization.Loc.T(TextKey);
+
+    /// <summary><see cref="Category"/> in the current language.</summary>
+    public string CategoryText => Localization.Loc.T(Category);
 
     /// <summary>The group shown in the shortcut editor ("파일", "편집"...).</summary>
     public string Category { get; init; } = string.Empty;
@@ -35,7 +43,7 @@ internal sealed class Command(string id, string text, Action execute)
     public string? Glyph { get; init; }
 
     /// <summary>The text without the access key marker, for dialogs and tooltips.</summary>
-    public string DisplayText => System.Text.RegularExpressions.Regex.Replace(Text, @"\(&.\)", string.Empty).Replace("&", string.Empty).Replace("...", string.Empty).Trim();
+    public string DisplayText => AccessKeySuffix.Replace(Text, string.Empty).Replace("&", string.Empty).Replace("...", string.Empty).Trim();
 
     public bool IsEnabled => CanExecute?.Invoke() ?? true;
 }

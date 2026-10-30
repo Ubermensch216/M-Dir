@@ -18,7 +18,8 @@ internal sealed record PaneState(
     bool TreeVisible = false,
     int TreeSplit = Workspace.DefaultTreeSplit,
     FileFilter? Filter = null,
-    bool FilterBarVisible = false);
+    bool FilterBarVisible = false,
+    IReadOnlyDictionary<Guid, FolderViewState>? ViewStates = null);
 
 /// <summary>Window position and size in screen pixels (the restored rectangle when maximized).</summary>
 internal sealed record WindowPlacement(int X, int Y, int Width, int Height, bool Maximized)
@@ -67,6 +68,7 @@ internal sealed class Workspace
     private const string Main = "Workspace";
     private const int Version = 1;
     private const int MaxTabsPerPane = 200;
+    private const int MaxViewStates = 32;
     private const int MinIconSize = 16;
     private const int MaxIconSize = 256;
     private const int MinTreeSplit = 500;
@@ -195,6 +197,7 @@ internal sealed class Workspace
                 ini.Set(section, "FilterNot", filter.Negative);
                 ini.Set(section, "FilterDirs", filter.FilterFolders);
             }
+            WriteViewStates(ini, section, pane.ViewStates);
             ini.Set(section, "Tabs", pane.Tabs.Count);
             for (int t = 0; t < pane.Tabs.Count; t++)
             {
@@ -209,6 +212,35 @@ internal sealed class Workspace
     }
 
     private static string PaneSection(int index) => $"Pane{index + 1}";
+
+    private static void WriteViewStates(IniFile ini, string section, IReadOnlyDictionary<Guid, FolderViewState>? states)
+    {
+        if (states is not { Count: > 0 })
+            return;
+
+        ini.Set(section, "Views", states.Count);
+
+        int number = 1;
+        foreach ((Guid kind, FolderViewState state) in states)
+        {
+            ini.Set(section, $"View{number}", kind.ToString("D"));
+            ini.Set(section, $"View{number}.State", state.Serialize());
+            number++;
+        }
+    }
+
+    private static Dictionary<Guid, FolderViewState>? ReadViewStates(IniFile ini, string section)
+    {
+        int count = Math.Clamp(ini.GetInt(section, "Views", 0), 0, MaxViewStates);
+        var states = new Dictionary<Guid, FolderViewState>();
+        for (int i = 1; i <= count; i++)
+        {
+            if (Guid.TryParse(ini.Get(section, $"View{i}"), out Guid kind) && FolderViewState.Parse(ini.Get(section, $"View{i}.State")) is { } state)
+                states[kind] = state;
+        }
+
+        return states.Count > 0 ? states : null;
+    }
 
     private static IReadOnlyList<int> ParseRatios(string? text, PaneLayout layout)
     {
@@ -259,6 +291,7 @@ internal sealed class Workspace
             ini.Get(section, "Filter") is { Length: > 0 } pattern
                 ? new FileFilter(pattern, ini.GetBool(section, "FilterAuto", true), ini.GetBool(section, "FilterNot", false), ini.GetBool(section, "FilterDirs", false))
                 : null,
-            ini.GetBool(section, "FilterBar", false));
+            ini.GetBool(section, "FilterBar", false),
+            ReadViewStates(ini, section));
     }
 }

@@ -202,7 +202,7 @@ internal sealed class ShortcutDialog : Form
         {
             List<Keys> keys = _working[command.Id];
             bool changed = !keys.SequenceEqual(command.DefaultShortcuts);
-            var item = new ListViewItem(command.Category) { Tag = command.Id, Font = changed ? new Font(_list.Font, FontStyle.Bold) : _list.Font };
+            var item = new ListViewItem(command.CategoryText) { Tag = command.Id, Font = changed ? new Font(_list.Font, FontStyle.Bold) : _list.Font };
             item.SubItems.Add(command.DisplayText);
             item.SubItems.Add(string.Join(", ", keys.Select(CommandRegistry.FormatKeys)));
             _list.Items.Add(item);

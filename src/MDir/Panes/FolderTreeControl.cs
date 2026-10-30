@@ -1,5 +1,7 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using MDir.Features;
+using MDir.Integration;
 using MDir.Settings;
 using MDir.Shell;
 
@@ -27,6 +29,10 @@ internal sealed class FolderTreeControl : Control
     private ShellLocation? _selected;
     private ShellLocation? _pendingSelect;
     private TreeOptions _options = new();
+    private bool _darkMode;
+    private ColorRuleSet? _colorRules;
+    private ColorTreeHook? _colorHook;
+    private int _defaultIndent = -1;
 
     public FolderTreeControl()
     {
@@ -46,7 +52,71 @@ internal sealed class FolderTreeControl : Control
         {
             _options = value;
             ApplyStyle();
+            ApplyIndent();
         }
+    }
+
+    /// <summary>Colour rules for the folder names; null turns colouring off.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal ColorRuleSet? ColorRules
+    {
+        get => _colorRules;
+        set
+        {
+            _colorRules = value;
+            _colorHook?.Refresh();
+        }
+    }
+
+    /// <summary>The indentation of tree levels in pixels as the tree view reports it (0 before it exists).</summary>
+    internal int CurrentIndent =>
+        FindTreeView() is var tree && tree != IntPtr.Zero ? (int)NativeMethods.SendMessage(tree, NativeMethods.TVM_GETINDENT, IntPtr.Zero, IntPtr.Zero) : 0;
+
+    private IntPtr FindTreeView() => IsHandleCreated ? NativeMethods.FindDescendant(Handle, "SysTreeView32") : IntPtr.Zero;
+
+    /// <summary>Applies <see cref="TreeOptions.Indent"/>; 0 puts back the indentation the control started with.</summary>
+    private void ApplyIndent()
+    {
+        IntPtr tree = FindTreeView();
+        if (tree == IntPtr.Zero)
+            return;
+
+        if (_defaultIndent < 0)
+            _defaultIndent = (int)NativeMethods.SendMessage(tree, NativeMethods.TVM_GETINDENT, IntPtr.Zero, IntPtr.Zero);
+
+        int indent = _options.Indent > 0 ? _options.Indent : _defaultIndent;
+        if (indent > 0)
+            NativeMethods.SendMessage(tree, NativeMethods.TVM_SETINDENT, (IntPtr)indent, IntPtr.Zero);
+    }
+
+    /// <summary>Dark scroll bars, background and text.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    public bool DarkMode
+    {
+        get => _darkMode;
+        set
+        {
+            _darkMode = value;
+            ApplyDarkMode();
+        }
+    }
+
+    private void ApplyDarkMode()
+    {
+        if (_tree is null || !IsHandleCreated)
+            return;
+
+        _tree.SetTheme(_darkMode ? "DarkMode_Explorer" : "explorer");
+        IntPtr treeView = NativeMethods.FindDescendant(Handle, "SysTreeView32");
+        if (treeView == IntPtr.Zero)
+            return;
+
+        // The tree draws its own background and text with these colours; the theme alone leaves them light.
+        uint background = _darkMode ? 0x00202020u : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOW);
+        uint text = _darkMode ? 0x00E6E6E6u : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT);
+        NativeMethods.SendMessage(treeView, NativeMethods.TVM_SETBKCOLOR, IntPtr.Zero, (IntPtr)background);
+        NativeMethods.SendMessage(treeView, NativeMethods.TVM_SETTEXTCOLOR, IntPtr.Zero, (IntPtr)text);
+        AppAppearance.SetControlTheme(treeView, _darkMode);
     }
 
     /// <summary>The selection as the tree control itself reports it.</summary>
@@ -116,12 +186,18 @@ internal sealed class FolderTreeControl : Control
         Marshal.ThrowExceptionForHR(_tree.Initialize(Handle, ref rect, BuildStyle()));
         _tree.SetTheme("explorer");
         Marshal.ThrowExceptionForHR(_tree.TreeAdvise(_sink, out _adviseCookie));
+        ApplyDarkMode();
 
         // The namespace root (desktop) with This PC, libraries, network... below it, like Explorer's navigation pane.
         if (ShellItems.FromLocation(ShellLocation.Desktop) is { } root)
             Marshal.ThrowExceptionForHR(_tree.AppendRoot(root, ShcontFolders, NstcRootStyle.Expanded, IntPtr.Zero));
 
         ResizeTreeWindow();
+        ApplyIndent();
+        IntPtr treeView = FindTreeView();
+        if (treeView != IntPtr.Zero && NativeMethods.GetParent(treeView) is var treeParent && treeParent != IntPtr.Zero)
+            _colorHook = new ColorTreeHook(treeParent, () => _colorRules);
+
         if (_pendingSelect is { } pending)
         {
             _pendingSelect = null;
@@ -131,6 +207,9 @@ internal sealed class FolderTreeControl : Control
 
     protected override void OnHandleDestroyed(EventArgs e)
     {
+        _colorHook?.Dispose();
+        _colorHook = null;
+        _defaultIndent = -1;
         if (_tree is not null)
         {
             if (_adviseCookie != 0)

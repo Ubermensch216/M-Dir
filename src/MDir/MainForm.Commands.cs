@@ -3,6 +3,7 @@ using System.Runtime.InteropServices;
 using MDir.Commands;
 using MDir.Features;
 using MDir.Layout;
+using MDir.Localization;
 using MDir.Panes;
 using MDir.Settings;
 using MDir.Shell;
@@ -107,6 +108,11 @@ internal sealed partial class MainForm
         Add("file.exit", "끝내기(&X)", file, Close, [Keys.Alt | Keys.F4], native: true);
 
         // Edit: the shell view handles these keys itself while it has focus, so the defaults are native.
+        Add("edit.undo", "실행 취소(&U)", edit, () =>
+        {
+            if (ActiveBrowser.Undo())
+                ActiveBrowser.RefreshView();
+        }, [Keys.Control | Keys.Z], native: true, can: () => ActiveBrowser.CanUndo);
         Add("edit.cut", "잘라내기(&T)", edit, () => CopySelectionToClipboard(cut: true), [Keys.Control | Keys.X], native: true, can: () => HasSelection, glyph: "");
         Add("edit.copy", "복사(&C)", edit, () => CopySelectionToClipboard(cut: false), [Keys.Control | Keys.C], native: true, can: () => HasSelection, glyph: "");
         Add("edit.paste", "붙여넣기(&P)", edit, PasteFromClipboard, [Keys.Control | Keys.V], native: true,
@@ -146,10 +152,20 @@ internal sealed partial class MainForm
         AddTreeOption("fullRow", "전체 행 선택 (연결선 없음)", o => o.FullRowSelect, (o, v) => o.FullRowSelect = v);
         AddTreeOption("singleClick", "한 번 클릭으로 펼치기", o => o.SingleClickExpand, (o, v) => o.SingleClickExpand = v);
         AddTreeOption("autoExpand", "현재 폴더 자동 펼치기", o => o.AutoExpand, (o, v) => o.AutoExpand = v);
+        foreach (int indent in TreeOptions.IndentChoices)
+        {
+            int captured = indent;
+            Add($"view.treeIndent.{indent}", indent == 0 ? "기본" : $"{indent}픽셀", view, () =>
+            {
+                TreeSettings.Indent = captured;
+                ApplyTreeOptions();
+            }, check: () => TreeSettings.Indent == captured);
+        }
         Add("view.filter", "파일 필터(&I)", view, ToggleFilter, [Keys.Control | Keys.Shift | Keys.F], check: () => _activePane.FilterBarVisible, glyph: "");
         Add("view.colorFilter", "색상 필터 사용(&C)", view, () => SetColorFilterEnabled(!Settings.ColorFilterEnabled), check: () => Settings.ColorFilterEnabled);
         Add("view.editColorFilter", "색상 필터 편집(&E)...", view, EditColorFilter);
         Add("view.preview", "미리보기 창(&P)", view, TogglePreview, [Keys.F12], check: () => _previewVisible);
+        Add("view.sortHighlight", "정렬 열 강조(&H)", view, () => SetSortHighlight(!Settings.SortColumnHighlight), check: () => Settings.SortColumnHighlight);
 
         // Go
         Add("go.back", "뒤로(&B)", go, () => ActiveBrowser.GoBack(), [Keys.Alt | Keys.Left], can: () => ActiveBrowser.CanGoBack, glyph: Glyphs.Back);
@@ -200,6 +216,7 @@ internal sealed partial class MainForm
         Add("help.about", "M-Dir 정보(&A)", help, ShowAbout);
 
         RegisterToolCommands();
+        RegisterSystemCommands();
 
         _commands.ImportCustom(Settings.Shortcuts);
 
@@ -215,7 +232,7 @@ internal sealed partial class MainForm
     {
         ToolStripMenuItem Top(string text, params ToolStripItem[] items)
         {
-            var top = new ToolStripMenuItem(text);
+            var top = new ToolStripMenuItem(Loc.T(text));
             top.DropDownItems.AddRange(items);
             top.DropDownOpening += (_, _) => RefreshMenuItems(top.DropDownItems);
             return top;
@@ -223,7 +240,7 @@ internal sealed partial class MainForm
 
         ToolStripMenuItem Sub(string text, params ToolStripItem[] items)
         {
-            var sub = new ToolStripMenuItem(text);
+            var sub = new ToolStripMenuItem(Loc.T(text));
             sub.DropDownItems.AddRange(items);
             return sub;
         }
@@ -242,13 +259,15 @@ internal sealed partial class MainForm
         ToolStripItem[] File() =>
         [
             Item("file.newWorkspace"), Item("file.openWorkspace"), Item("file.saveWorkspace"), Item("file.saveWorkspaceAs"), Sep(),
-            Item("file.newFolder"), Item("file.exportList"), Sep(),
+            Item("file.newFolder"), Item("file.exportList"), Item("file.print"), Item("file.printPreview"), Sep(),
+            Item("file.importQdir"), Sep(),
             Item("file.autoWorkspace"), Sep(),
             Item("file.exit"),
         ];
 
         ToolStripItem[] Edit() =>
         [
+            Item("edit.undo"), Sep(),
             Item("edit.cut"), Item("edit.copy"), Item("edit.paste"), Sep(),
             Item("edit.delete"), Item("edit.deletePermanent"), Item("edit.rename"), Sep(),
             Item("edit.selectAll"), Item("edit.invertSelection"), Sep(),
@@ -266,10 +285,11 @@ internal sealed partial class MainForm
             Sep(),
             Item("view.refresh"), Sep(),
             Item("view.tree"), Item("view.treePaneMode"), Item("view.treeSharedMode"),
-            Sub("트리 옵션(&O)", Item("view.treeOption.lines"), Item("view.treeOption.fullRow"), Item("view.treeOption.singleClick"), Item("view.treeOption.autoExpand")),
+            Sub("트리 옵션(&O)", Item("view.treeOption.lines"), Item("view.treeOption.fullRow"), Item("view.treeOption.singleClick"), Item("view.treeOption.autoExpand"),
+                Sep(), Sub("들여쓰기(&I)", [.. TreeOptions.IndentChoices.Select(indent => (ToolStripItem)Item($"view.treeIndent.{indent}"))])),
             Sep(),
             Item("view.filter"), Item("view.colorFilter"), Item("view.editColorFilter"), Sep(),
-            Item("view.preview"), Item("view.autoFolderSize"),
+            Item("view.preview"), Item("view.autoFolderSize"), Item("view.folderSizeColumn"), Item("view.sortHighlight"),
         ];
 
         ToolStripItem[] Go() => [Item("go.back"), Item("go.forward"), Item("go.up"), Sep(), Item("go.address")];
@@ -289,12 +309,17 @@ internal sealed partial class MainForm
 
         ToolStripItem[] Tools() =>
         [
-            Item("tools.folderSize"), Item("tools.multiRename"), Item("tools.compareFolders"), Item("tools.hash"), Item("tools.createHardLink"), Sep(),
+            Item("tools.search"), Item("tools.folderSize"), Item("tools.multiRename"), Item("tools.compareFolders"), Item("tools.hash"), Item("tools.createHardLink"), Sep(),
             Item("tools.openCmd"), Item("tools.openPowerShell"), Item("tools.openExplorer"), Sep(),
-            Item("tools.shortcuts"),
+            Item("tools.shortcuts"), Item("tools.toolbar"),
         ];
 
-        ToolStripItem[] Window() => [Item("window.fullScreen"), Item("window.hideMenu"), Item("window.toolbar")];
+        ToolStripItem[] Window() =>
+        [
+            Item("window.fullScreen"), Item("window.hideMenu"), Item("window.toolbar"), Sep(),
+            .. SystemMenuItems(Item), Sep(),
+            Item("window.minimizeToTray"), Item("window.singleInstance"), Item("window.autoStart"), Item("window.explorerMenu"),
+        ];
 
         var menu = new MenuStrip { Dock = DockStyle.Top };
         menu.Items.AddRange(
@@ -317,10 +342,11 @@ internal sealed partial class MainForm
     /// <summary>The favorites menu: the three fixed commands, then the favorites themselves, rebuilt each time it opens.</summary>
     private ToolStripMenuItem BuildFavoritesMenu()
     {
-        var menu = new ToolStripMenuItem("즐겨찾기(&A)");
+        var menu = new ToolStripMenuItem(Loc.T("즐겨찾기(&A)"));
         menu.DropDownItems.Add(CreateMenuItem(_commands.Get("fav.add")));
         menu.DropDownItems.Add(CreateMenuItem(_commands.Get("fav.addQuick")));
         menu.DropDownItems.Add(CreateMenuItem(_commands.Get("fav.manage")));
+        menu.DropDownItems.Add(CreateMenuItem(_commands.Get("fav.importQdir")));
         menu.DropDownItems.Add(new ToolStripSeparator());
         int fixedCount = menu.DropDownItems.Count;
         menu.DropDownOpening += (_, _) =>
@@ -343,35 +369,64 @@ internal sealed partial class MainForm
     private ToolStrip BuildToolbar()
     {
         var toolbar = new ToolStrip { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, CanOverflow = true, Visible = Settings.ShowToolbar };
+        _toolbar = toolbar;
+        FillToolbar();
+        return toolbar;
+    }
+
+    /// <summary>The toolbar tokens in use: the saved ones, or the default toolbar.</summary>
+    internal IReadOnlyList<string> ToolbarTokens => ToolbarLayout.Resolve(Settings.ToolbarItems, id => _commands.TryGet(id, out _));
+
+    /// <summary>(Re)creates the toolbar buttons from <see cref="ToolbarTokens"/>.</summary>
+    private void FillToolbar()
+    {
+        if (_toolbar is not { } toolbar)
+            return;
+
+        toolbar.SuspendLayout();
+        foreach (ToolStripItem old in toolbar.Items.Cast<ToolStripItem>().ToArray())
+            old.Dispose();
+        toolbar.Items.Clear();
+        _toolbarItems.Clear();
+
         var toolbarTips = new List<(Command, ToolStripButton)>();
-        void Button(string id)
+        foreach (string token in ToolbarTokens)
         {
-            Command command = _commands.Get(id);
-            var button = new ToolStripButton(command.Glyph ?? command.DisplayText)
+            if (token == ToolbarLayout.Separator)
             {
-                DisplayStyle = ToolStripItemDisplayStyle.Text,
-                Tag = command,
-                Font = command.Glyph is null ? toolbar.Font : Glyphs.Font,
-            };
-            button.Click += (_, _) => Run(command);
-            toolbar.Items.Add(button);
-            toolbarTips.Add((command, button));
-            _toolbarItems.Add((command, button));
+                toolbar.Items.Add(new ToolStripSeparator());
+            }
+            else if (token == ToolbarLayout.Layouts)
+            {
+                toolbar.Items.Add(CreateLayoutDropDown());
+            }
+            else
+            {
+                Command command = _commands.Get(token);
+                var button = new ToolStripButton(command.Glyph ?? command.DisplayText)
+                {
+                    DisplayStyle = ToolStripItemDisplayStyle.Text,
+                    Tag = command,
+                    Font = command.Glyph is null ? toolbar.Font : Glyphs.Font,
+                };
+                button.Click += (_, _) => Run(command);
+                toolbar.Items.Add(button);
+                toolbarTips.Add((command, button));
+                _toolbarItems.Add((command, button));
+            }
         }
 
-        foreach (string id in new[] { "go.back", "go.forward", "go.up", "view.refresh" })
-            Button(id);
-        toolbar.Items.Add(new ToolStripSeparator());
-        foreach (string id in new[] { "tab.new", "file.newFolder" })
-            Button(id);
-        toolbar.Items.Add(new ToolStripSeparator());
-        foreach (string id in new[] { "edit.cut", "edit.copy", "edit.paste", "edit.delete" })
-            Button(id);
-        toolbar.Items.Add(new ToolStripSeparator());
-        foreach (string id in new[] { "view.tree", "view.filter", "view.preview" })
-            Button(id);
+        // Tooltips show the name and the current shortcut; refreshed when the toolbar is rebuilt after a shortcut change.
+        foreach ((Command command, ToolStripButton button) in toolbarTips)
+            button.ToolTipText = _commands.ShortcutText(command) is { Length: > 0 } key ? $"{command.DisplayText} ({key})" : command.DisplayText;
 
-        var layouts = new ToolStripDropDownButton("레이아웃") { DisplayStyle = ToolStripItemDisplayStyle.Text, ToolTipText = "창 레이아웃" };
+        toolbar.ResumeLayout();
+        RefreshCommandStates();
+    }
+
+    private ToolStripDropDownButton CreateLayoutDropDown()
+    {
+        var layouts = new ToolStripDropDownButton(Loc.T("레이아웃")) { DisplayStyle = ToolStripItemDisplayStyle.Text, ToolTipText = Loc.T("창 레이아웃") };
         int iconSize = LogicalToDeviceUnits(16);
         foreach (PaneLayout paneLayout in PaneLayout.All)
         {
@@ -381,14 +436,7 @@ internal sealed partial class MainForm
         }
 
         layouts.DropDownOpening += (_, _) => RefreshMenuItems(layouts.DropDownItems);
-        toolbar.Items.Add(layouts);
-
-        // Tooltips show the name and the current shortcut; refreshed when the toolbar is rebuilt after a shortcut change.
-        foreach ((Command command, ToolStripButton button) in toolbarTips)
-            button.ToolTipText = _commands.ShortcutText(command) is { Length: > 0 } key ? $"{command.DisplayText} ({key})" : command.DisplayText;
-
-        _toolbar = toolbar;
-        return toolbar;
+        return layouts;
     }
 
     /// <summary>Brings the toolbar buttons in line with the current selection, clipboard and toggles.</summary>
@@ -423,6 +471,7 @@ internal sealed partial class MainForm
         {
             if (item.Tag is Command command && item is ToolStripMenuItem menuItem)
             {
+                menuItem.Text = command.Text;
                 menuItem.Enabled = command.IsEnabled;
                 menuItem.Checked = command.IsChecked?.Invoke() ?? false;
                 menuItem.ShortcutKeyDisplayString = _commands.ShortcutText(command);
@@ -587,13 +636,13 @@ internal sealed partial class MainForm
     }
 
     private void ShowAbout() =>
-        MessageBox.Show(this, $"M-Dir {typeof(MainForm).Assembly.GetName().Version?.ToString(3)}\n\n여러 패널과 탭, 폴더 트리, 필터, 미리보기를 갖춘 파일 관리자입니다.\nWindows 탐색기의 파일 목록을 그대로 사용합니다.",
-            "M-Dir 정보", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        MessageBox.Show(this, Loc.F("M-Dir {0}\n\n여러 패널과 탭, 폴더 트리, 필터, 미리보기를 갖춘 파일 관리자입니다.\nWindows 탐색기의 파일 목록을 그대로 사용합니다.", typeof(MainForm).Assembly.GetName().Version?.ToString(3)),
+            Loc.T("M-Dir 정보"), MessageBoxButtons.OK, MessageBoxIcon.Information);
 
     private void EditShortcuts()
     {
         using var dialog = new ShortcutDialog(_commands);
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        if (ShowLocalized(dialog) != DialogResult.OK)
             return;
 
         ApplyShortcuts(dialog.Result);
