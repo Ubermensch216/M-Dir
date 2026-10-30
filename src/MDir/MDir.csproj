@@ -14,12 +14,15 @@
     <Version>0.1.0</Version>
   </PropertyGroup>
 
-  <!-- dotnet publish -c Release -r win-x64 : one self-contained M-Dir.exe that needs no installed .NET (see publish.ps1). -->
+  <!-- dotnet publish -c Release -r win-x64 : a single M-Dir.exe (see publish.ps1).
+       Self-contained by default (about 49 MB, needs no installed .NET); -p:SelfContained=false gives the
+       framework-dependent exe (under 1 MB, needs the .NET 10 Desktop Runtime). Trimming is not offered:
+       the SDK does not support it for Windows Forms (NETSDK1175) and the COM interop here relies on reflection. -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
-    <SelfContained>true</SelfContained>
+    <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>
     <PublishSingleFile>true</PublishSingleFile>
-    <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <EnableCompressionInSingleFile Condition="'$(SelfContained)' == 'true'">true</EnableCompressionInSingleFile>
+    <IncludeNativeLibrariesForSelfExtract Condition="'$(SelfContained)' == 'true'">true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>none</DebugType>
     <SatelliteResourceLanguages>en</SatelliteResourceLanguages>
   </PropertyGroup>
