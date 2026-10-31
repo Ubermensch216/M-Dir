@@ -67,7 +67,8 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
         IntPtr list = _list != IntPtr.Zero ? _list : NativeMethods.FindDescendant(Handle, "SysListView32");
         if (list != IntPtr.Zero)
         {
-            ApplyDark(list);
+            NativeMethods.SendMessage(list, NativeMethods.LVM_ENABLEGROUPVIEW, IntPtr.Zero, IntPtr.Zero);
+            ApplyDark(list, force: true);
             ApplySortHighlight(list);
             ApplyBackground(list, _getRules());
             NativeMethods.RedrawWindow(list, IntPtr.Zero, IntPtr.Zero, NativeMethods.RDW_INVALIDATE | NativeMethods.RDW_ERASE | NativeMethods.RDW_ALLCHILDREN);
@@ -281,17 +282,26 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
     }
 
     /// <summary>Dark scroll bars, background and text for the list (and the way back to the system colours).</summary>
-    private void ApplyDark(IntPtr list)
+    private void ApplyDark(IntPtr list, bool force = false)
     {
         bool dark = _isDark();
-        if (dark == _darkApplied)
+        uint background = dark ? DarkBackground : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOW);
+        uint text = dark ? DarkText : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT);
+
+        if (!force && dark == _darkApplied)
+        {
+            if ((uint)NativeMethods.SendMessage(list, NativeMethods.LVM_GETBKCOLOR, IntPtr.Zero, IntPtr.Zero) != background)
+            {
+                NativeMethods.SendMessage(list, NativeMethods.LVM_SETBKCOLOR, IntPtr.Zero, (IntPtr)background);
+                NativeMethods.SendMessage(list, NativeMethods.LVM_SETTEXTBKCOLOR, IntPtr.Zero, (IntPtr)background);
+                NativeMethods.SendMessage(list, NativeMethods.LVM_SETTEXTCOLOR, IntPtr.Zero, (IntPtr)text);
+            }
             return;
+        }
 
         _darkApplied = dark;
         AppAppearance.SetControlTheme(list, dark);
         AppAppearance.SetHeaderTheme(NativeMethods.SendMessage(list, NativeMethods.LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero), dark);
-        uint background = dark ? DarkBackground : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOW);
-        uint text = dark ? DarkText : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT);
         NativeMethods.SendMessage(list, NativeMethods.LVM_SETBKCOLOR, IntPtr.Zero, (IntPtr)background);
         NativeMethods.SendMessage(list, NativeMethods.LVM_SETTEXTBKCOLOR, IntPtr.Zero, (IntPtr)background);
         NativeMethods.SendMessage(list, NativeMethods.LVM_SETTEXTCOLOR, IntPtr.Zero, (IntPtr)text);

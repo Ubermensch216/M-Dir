@@ -209,7 +209,7 @@ internal interface IFolderView2
     [PreserveSig] int SelectAndPositionItems(uint cidl, IntPtr apidl, IntPtr apt, uint dwFlags);
 
     // IFolderView2
-    [PreserveSig] int SetGroupBy(IntPtr key, int fAscending);
+    [PreserveSig] int SetGroupBy(ref PropertyKey key, int fAscending);
     [PreserveSig] int GetGroupBy(IntPtr pkey, IntPtr pfAscending);
     [PreserveSig] int SetViewProperty(IntPtr pidl, IntPtr propkey, IntPtr propvar);
     [PreserveSig] int GetViewProperty(IntPtr pidl, IntPtr propkey, IntPtr ppropvar);
@@ -322,6 +322,7 @@ internal static partial class NativeMethods
     public const uint LVM_GETHEADER = 0x101F;
     public const uint LVM_SETSELECTEDCOLUMN = 0x108C;
     public const uint LVM_GETSELECTEDCOLUMN = 0x10AE;
+    public const uint LVM_ENABLEGROUPVIEW = 0x109D;
     public const uint TVM_GETINDENT = 0x1106;
     public const uint TVM_SETINDENT = 0x1107;
     public const uint TVM_SETBKCOLOR = 0x111D;

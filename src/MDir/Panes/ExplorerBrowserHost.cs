@@ -272,6 +272,25 @@ public sealed class ExplorerBrowserHost : Control
         });
     }
 
+    /// <summary>
+    /// Turns off shell grouping (such as the Downloads folder's automatic date grouping). SysListView32 has
+    /// no dark mode support for group view in Windows (uxtheme renders it with a glaring white background).
+    /// </summary>
+    private static void TurnOffGroupBy(IFolderView2? folderView)
+    {
+        if (folderView is null)
+            return;
+
+        try
+        {
+            PropertyKey nullKey = default;
+            folderView.SetGroupBy(ref nullKey, 0);
+        }
+        catch (Exception ex) when (ex is COMException or InvalidCastException)
+        {
+        }
+    }
+
     /// <summary>A folder finished opening: show it the way the user last set up folders of its kind, then note how it looks.</summary>
     private void ApplyStoredViewState()
     {
@@ -279,6 +298,8 @@ public sealed class ExplorerBrowserHost : Control
         _stateBaseline = null;
         if (_view is null || ViewStateInterop.GetFolderKind(_view) is not { } kind)
             return;
+
+        TurnOffGroupBy(_folderView);
 
         if (_viewStates.TryGetValue(kind, out FolderViewState? state))
         {
@@ -827,6 +848,7 @@ public sealed class ExplorerBrowserHost : Control
         _colorHook?.Dispose();
         _colorHook = _view is null ? null : new ColorListHook(_view, () => _colorRules, () => _isActivePane, () => _darkMode, () => _hideSortHighlight, new SizeSource(this));
         _folderView?.SetViewModeAndIconSize(_viewMode, _iconSize);
+        TurnOffGroupBy(_folderView);
     }
 
     private void OnNavigationComplete(IntPtr pidl)
@@ -850,6 +872,7 @@ public sealed class ExplorerBrowserHost : Control
         _pending = PendingNavigation.None;
         _itemCount = _selectedCount = -1;
         ScheduleStoredViewState();
+        TurnOffGroupBy(_folderView);
         if (_darkMode)
             _colorHook?.RefreshAppearance();
         NavigationCompleted?.Invoke(this, EventArgs.Empty);
