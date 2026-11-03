@@ -69,7 +69,7 @@ internal sealed partial class MainForm
     }
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData) =>
-        TryShortcut(keyData) || base.ProcessCmdKey(ref msg, keyData);
+        TryShortcut(keyData) || TryDeleteKey(keyData, ExplorerBrowserHost.IsListFocused()) || base.ProcessCmdKey(ref msg, keyData);
 
     /// <summary>
     /// Runs the command bound to <paramref name="keyData"/>. Returns false (the key is left to the focused control)
@@ -115,10 +115,10 @@ internal sealed partial class MainForm
         }, [Keys.Control | Keys.Z], native: true, can: () => ActiveBrowser.CanUndo);
         Add("edit.cut", "잘라내기(&T)", edit, () => CopySelectionToClipboard(cut: true), [Keys.Control | Keys.X], native: true, can: () => HasSelection, glyph: "");
         Add("edit.copy", "복사(&C)", edit, () => CopySelectionToClipboard(cut: false), [Keys.Control | Keys.C], native: true, can: () => HasSelection, glyph: "");
-        Add("edit.paste", "붙여넣기(&P)", edit, PasteFromClipboard, [Keys.Control | Keys.V], native: true,
+        Add("edit.paste", "붙여넣기(&P)", edit, () => _ = PasteFromClipboardAsync(), [Keys.Control | Keys.V], native: true,
             can: () => CurrentFolderPath is not null && FileClipboard.HasFiles(), glyph: "");
-        Add("edit.delete", "삭제(&D)", edit, () => DeleteSelection(permanent: false), [Keys.Delete], native: true, can: () => HasSelection, glyph: "");
-        Add("edit.deletePermanent", "영구 삭제(&E)", edit, () => DeleteSelection(permanent: true), [Keys.Shift | Keys.Delete], native: true, can: () => HasSelection);
+        Add("edit.delete", "삭제(&D)", edit, () => _ = DeleteSelectionAsync(permanent: false), [Keys.Delete], native: true, can: () => HasSelection, glyph: "");
+        Add("edit.deletePermanent", "영구 삭제(&E)", edit, () => _ = DeleteSelectionAsync(permanent: true), [Keys.Shift | Keys.Delete], native: true, can: () => HasSelection);
         Add("edit.rename", "이름 바꾸기(&M)", edit, () => ActiveBrowser.BeginRename(), [Keys.F2], native: true, can: () => HasSelection);
         Add("edit.selectAll", "모두 선택(&A)", edit, () => ActiveBrowser.SelectAll(), [Keys.Control | Keys.A], native: true);
         Add("edit.invertSelection", "선택 반전(&I)", edit, () => ActiveBrowser.InvertSelection(), [Keys.Control | Keys.Shift | Keys.A]);
@@ -132,8 +132,8 @@ internal sealed partial class MainForm
         {
             int index = i;
             Func<bool> canTransfer = () => HasSelection && TransferTargetFolder(_panes[index]) is not null;
-            Add($"edit.copyToPane{i + 1}", $"패널 {i + 1}(으)로 복사", edit, () => TransferSelection(_panes[index], move: false), can: canTransfer);
-            Add($"edit.moveToPane{i + 1}", $"패널 {i + 1}(으)로 이동", edit, () => TransferSelection(_panes[index], move: true), can: canTransfer);
+            Add($"edit.copyToPane{i + 1}", $"패널 {i + 1}(으)로 복사", edit, () => _ = TransferSelectionAsync(_panes[index], move: false), can: canTransfer);
+            Add($"edit.moveToPane{i + 1}", $"패널 {i + 1}(으)로 이동", edit, () => _ = TransferSelectionAsync(_panes[index], move: true), can: canTransfer);
         }
 
         // View
@@ -484,6 +484,11 @@ internal sealed partial class MainForm
 
     // ---- file operations -------------------------------------------------------------------------------------
 
+    private int _runningFileOperations;
+
+    /// <summary>How many copy, move or delete operations are still running in the background.</summary>
+    internal int RunningFileOperations => _runningFileOperations;
+
     private FileOperations CreateFileOperations() => new(Handle, SilentFileOperations);
 
     private void ReportResult(FileOperationResult result)
@@ -491,6 +496,35 @@ internal sealed partial class MainForm
         // A cancelled operation is not an error; the shell has already told the user what it wanted to.
         if (!result.Success && !result.Aborted && result.Error is { } error)
             ReportError(error);
+    }
+
+    /// <summary>
+    /// Runs a copy, move or delete on its own thread so the rest of the window keeps working; the shell shows its
+    /// own progress dialog. Errors are reported here, so the returned task does not fail.
+    /// </summary>
+    private async Task<FileOperationResult?> RunFileOperationAsync(Func<FileOperations, FileOperationResult> operation)
+    {
+        _runningFileOperations++;
+        try
+        {
+            return await CreateFileOperations().InBackground(operation);
+        }
+        catch (Exception ex)
+        {
+            ReportError(ex.Message);
+            return null;
+        }
+        finally
+        {
+            _runningFileOperations--;
+        }
+    }
+
+    /// <summary>Refreshes a view after an operation finished, unless its pane went away meanwhile.</summary>
+    private static void RefreshAfterOperation(ExplorerBrowserHost browser)
+    {
+        if (!browser.IsDisposed && browser.IsHandleCreated)
+            browser.RefreshView();
     }
 
     /// <summary>Puts the selected files on the clipboard as copied or cut, so they can be pasted here or in Explorer.</summary>
@@ -502,27 +536,43 @@ internal sealed partial class MainForm
     }
 
     /// <summary>Pastes the clipboard's files into the active pane's folder (a cut moves them, a copy copies).</summary>
-    internal void PasteFromClipboard()
+    internal async Task PasteFromClipboardAsync()
     {
         if (CurrentFolderPath is not { } folder || FileClipboard.GetFiles() is not { } clipboard)
             return;
 
-        FileOperationResult result = clipboard.Cut
-            ? CreateFileOperations().Move(clipboard.Paths, folder)
-            : CreateFileOperations().Copy(clipboard.Paths, folder);
+        ExplorerBrowserHost browser = ActiveBrowser;
+        FileOperationResult? result = await RunFileOperationAsync(operations =>
+            clipboard.Cut ? operations.Move(clipboard.Paths, folder) : operations.Copy(clipboard.Paths, folder));
+        if (result is null)
+            return;
+
         if (result.Success && clipboard.Cut)
             FileClipboard.ClearFiles();
 
         ReportResult(result);
-        ActiveBrowser.RefreshView();
+        RefreshAfterOperation(browser);
     }
 
     /// <summary>Deletes the selection to the Recycle Bin, or for good (the shell asks for confirmation).</summary>
-    internal void DeleteSelection(bool permanent)
+    internal async Task DeleteSelectionAsync(bool permanent)
     {
         IReadOnlyList<string> paths = ActiveBrowser.GetSelectedPaths();
-        if (paths.Count > 0)
-            ReportResult(CreateFileOperations().Delete(paths, permanent));
+        if (paths.Count > 0 && await RunFileOperationAsync(operations => operations.Delete(paths, permanent)) is { } result)
+            ReportResult(result);
+    }
+
+    /// <summary>
+    /// Delete and Shift+Delete in the shell view would run the shell's own delete on this thread and freeze the window
+    /// until it ends, so they are taken over (<paramref name="listFocused"/>: the focus is in the file list, not in a
+    /// text box or the in-place rename box). Returns false when the key is left to the control.
+    /// </summary>
+    internal bool TryDeleteKey(Keys keyData, bool listFocused)
+    {
+        if (!listFocused || keyData is not (Keys.Delete or (Keys.Shift | Keys.Delete)))
+            return false;
+
+        return Run(_commands.Get(keyData == Keys.Delete ? "edit.delete" : "edit.deletePermanent"));
     }
 
     /// <summary>Creates "새 폴더" in the active folder, selects it and starts renaming it.</summary>
@@ -559,19 +609,22 @@ internal sealed partial class MainForm
     private void TransferToNextPane(bool move)
     {
         if (NextVisiblePane() is { } target)
-            TransferSelection(target, move);
+            _ = TransferSelectionAsync(target, move);
     }
 
     /// <summary>Copies or moves the active pane's selection into the folder another pane shows.</summary>
-    internal void TransferSelection(PaneControl target, bool move)
+    internal async Task TransferSelectionAsync(PaneControl target, bool move)
     {
         IReadOnlyList<string> paths = ActiveBrowser.GetSelectedPaths();
         if (paths.Count == 0 || TransferTargetFolder(target) is not { } folder)
             return;
 
-        FileOperations operations = CreateFileOperations();
-        ReportResult(move ? operations.Move(paths, folder) : operations.Copy(paths, folder));
-        target.Browser.RefreshView();
+        FileOperationResult? result = await RunFileOperationAsync(operations => move ? operations.Move(paths, folder) : operations.Copy(paths, folder));
+        if (result is null)
+            return;
+
+        ReportResult(result);
+        RefreshAfterOperation(target.Browser);
     }
 
     internal void CopyPathText(PathText kind)

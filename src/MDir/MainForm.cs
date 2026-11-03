@@ -285,6 +285,15 @@ internal sealed partial class MainForm : Form, IMessageFilter
     protected override void OnFormClosing(FormClosingEventArgs e)
     {
         base.OnFormClosing(e);
+
+        // Ending the process stops a copy or delete half way, so ask first.
+        if (!e.Cancel && _runningFileOperations > 0 && !SilentFileOperations
+            && MessageBox.Show(this, Loc.T("진행 중인 파일 작업이 있습니다. 지금 끝내면 작업이 중간에 멈춥니다. 끝낼까요?"), "M-Dir",
+                MessageBoxButtons.YesNo, MessageBoxIcon.Warning, MessageBoxDefaultButton.Button2) != DialogResult.Yes)
+        {
+            e.Cancel = true;
+        }
+
         if (!e.Cancel && _profile is { Settings.AutoWorkspace: true })
         {
             try

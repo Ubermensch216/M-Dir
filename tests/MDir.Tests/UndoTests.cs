@@ -30,7 +30,7 @@ public class UndoTests
             await WaitUntil(() => source.ItemCount == 1 && form.Panes[1].Browser.CurrentLocation is not null, "both panes shown");
             source.SelectAll();
             await WaitUntil(() => source.SelectedCount == 1, "file selected");
-            form.TransferSelection(form.Panes[1], move: false);
+            await form.TransferSelectionAsync(form.Panes[1], move: false);
             Assert.True(File.Exists(root.File(@"dest\a.txt")));
 
             Assert.True(form.Panes[1].Browser.CanUndo);

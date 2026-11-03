@@ -29,6 +29,35 @@ internal sealed class FileOperations(IntPtr ownerWindow = default, bool silent =
         ? FileOperationFlags.Silent | FileOperationFlags.NoConfirmation | FileOperationFlags.NoErrorUi | (replaceExisting ? 0 : FileOperationFlags.RenameOnCollision)
         : 0;
 
+    /// <summary>
+    /// Runs <paramref name="operation"/> on its own STA thread so the window stays usable meanwhile. The shell still
+    /// shows its progress dialog and prompts, but without an owner window: an owner would be disabled until the
+    /// operation ends, which is exactly what this avoids. The operation gets a copy of these settings without owner.
+    /// </summary>
+    public Task<FileOperationResult> InBackground(Func<FileOperations, FileOperationResult> operation)
+    {
+        var detached = new FileOperations(IntPtr.Zero, silent, replaceExisting);
+        var completion = new TaskCompletionSource<FileOperationResult>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                completion.SetResult(operation(detached));
+            }
+            catch (Exception ex)
+            {
+                completion.SetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "M-Dir file operation",
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return completion.Task;
+    }
+
     public FileOperationResult Copy(IReadOnlyList<string> sources, string destinationFolder) =>
         Transfer(sources, destinationFolder, (operation, item, folder) => operation.CopyItem(item, folder, null, IntPtr.Zero));
 

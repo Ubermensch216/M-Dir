@@ -222,6 +222,7 @@ public class CommandIntegrationTests(ITestOutputHelper output)
             form.ActivatePane(1);
             await WaitUntil(() => form.ActivePane.Index == 1, "pane 2 active");
             Assert.True(form.RunCommand("edit.paste"));
+            await WaitUntil(() => File.Exists(root.File(@"dest\a.txt")) && form.RunningFileOperations == 0, "a.txt was pasted");
             Assert.Equal("a.txt", File.ReadAllText(root.File(@"dest\a.txt")));
             Assert.True(File.Exists(root.File(@"src\a.txt")));
 
@@ -232,8 +233,8 @@ public class CommandIntegrationTests(ITestOutputHelper output)
             Assert.True(clipboard.Files!.Value.Cut);
             form.ActivatePane(1);
             Assert.True(form.RunCommand("edit.paste"));
+            await WaitUntil(() => File.Exists(root.File(@"dest\b.txt")) && form.RunningFileOperations == 0, "b.txt was moved");
 
-            Assert.True(File.Exists(root.File(@"dest\b.txt")));
             Assert.False(File.Exists(root.File(@"src\b.txt")), "a cut moves the file");
             Assert.Null(clipboard.Files);
         });
@@ -249,12 +250,12 @@ public class CommandIntegrationTests(ITestOutputHelper output)
 
             await SelectInActivePane(form, 0);
             Assert.True(form.RunCommand("edit.copyToNext"));
-            Assert.True(File.Exists(root.File(@"dest\a.txt")));
+            await WaitUntil(() => File.Exists(root.File(@"dest\a.txt")) && form.RunningFileOperations == 0, "a.txt was copied");
             Assert.True(File.Exists(root.File(@"src\a.txt")));
 
             await SelectInActivePane(form, 1);
             Assert.True(form.RunCommand("edit.moveToPane2"));
-            Assert.True(File.Exists(root.File(@"dest\b.txt")));
+            await WaitUntil(() => File.Exists(root.File(@"dest\b.txt")) && form.RunningFileOperations == 0, "b.txt was moved");
             Assert.False(File.Exists(root.File(@"src\b.txt")));
 
             // Not available into the active pane itself or into a pane the layout does not show.
@@ -283,9 +284,57 @@ public class CommandIntegrationTests(ITestOutputHelper output)
             await WaitUntil(() => form.Panes[0].Browser.ItemCount == 5, "five items");
             form.Panes[0].Browser.SelectAll();
             await WaitUntil(() => form.Panes[0].Browser.SelectedCount == 5, "all selected");
-            form.DeleteSelection(permanent: true);
+            Task deleting = form.DeleteSelectionAsync(permanent: true);
 
             await WaitUntil(() => Directory.GetFileSystemEntries(root.File("src")).Length == 0, "everything was deleted");
+            await deleting;
+            Assert.Equal(0, form.RunningFileOperations);
+        });
+    }
+
+    [Fact]
+    public void Delete_RunsOffTheWindowThread_SoTheWindowStaysUsableMeanwhile()
+    {
+        using TempDirectory root = CreateRoot();
+        Run(() => CreateForm(root), async form =>
+        {
+            await WaitUntil(() => form.Panes[0].Browser.ItemCount == 3, "src listed");
+            form.Panes[0].Browser.SelectAll();
+            await WaitUntil(() => form.Panes[0].Browser.SelectedCount == 3, "all selected");
+
+            int windowThread = Environment.CurrentManagedThreadId;
+            int? operationThread = null;
+            Task<FileOperationResult> running = new FileOperations(IntPtr.Zero, silent: true).InBackground(operations =>
+            {
+                operationThread = Environment.CurrentManagedThreadId;
+                Assert.Equal(ApartmentState.STA, Thread.CurrentThread.GetApartmentState());
+                return operations.Delete([root.File(@"src\a.txt")], permanent: true);
+            });
+
+            // The window thread is free to do other work (here: run a command) while the operation is in flight.
+            Assert.True(form.RunCommand("edit.copyPath"));
+            Assert.True((await running).Success);
+            Assert.NotEqual(windowThread, operationThread);
+            Assert.False(File.Exists(root.File(@"src\a.txt")));
+        });
+    }
+
+    [Fact]
+    public void TheDeleteKeyInTheFileList_IsTakenOver_ButNotInATextBox()
+    {
+        using TempDirectory root = CreateRoot();
+        Run(() => CreateForm(root), async form =>
+        {
+            await WaitUntil(() => form.Panes[0].Browser.ItemCount == 3, "src listed");
+
+            Assert.False(form.TryDeleteKey(Keys.Delete, listFocused: true), "nothing is selected");
+
+            await SelectInActivePane(form, 0);
+            Assert.False(form.TryDeleteKey(Keys.Delete, listFocused: false), "a text box or the rename box keeps its Delete key");
+            Assert.False(form.TryDeleteKey(Keys.F2, listFocused: true));
+
+            Assert.True(form.TryDeleteKey(Keys.Shift | Keys.Delete, listFocused: true));
+            await WaitUntil(() => !File.Exists(root.File(@"src\a.txt")) && form.RunningFileOperations == 0, "a.txt was deleted");
         });
     }
 
@@ -433,6 +482,7 @@ public class CommandIntegrationTests(ITestOutputHelper output)
             form.ActivatePane(1);
             await WaitUntil(() => form.ActivePane.Index == 1, "pane 2 active");
             form.RunCommand("edit.paste");
+            await WaitUntil(() => errors.Count > 0, "the error was reported");
 
             Assert.Single(errors);
             Assert.Contains("gone.txt", errors[0]);

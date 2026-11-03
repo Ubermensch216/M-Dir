@@ -922,6 +922,13 @@ public sealed class ExplorerBrowserHost : Control
         }
     }
 
+    /// <summary>The keyboard focus is in a shell file list (not in a text box or the rename box of an item).</summary>
+    internal static bool IsListFocused()
+    {
+        IntPtr focus = NativeMethods.GetFocus();
+        return focus != IntPtr.Zero && NativeMethods.GetClassName(focus).Equals("SysListView32", StringComparison.OrdinalIgnoreCase);
+    }
+
     private static bool IsEditFocused()
     {
         IntPtr focus = NativeMethods.GetFocus();

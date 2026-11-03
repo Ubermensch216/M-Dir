@@ -306,6 +306,7 @@ internal static class EnglishStrings
         ["기본 아이콘"] = "Default Icon",
         ["'{0}' 폴더와 그 안의 즐겨찾기"] = "the folder '{0}' and the favorites inside it",
         ["{0}를 삭제할까요?"] = "Delete {0}?",
+        ["진행 중인 파일 작업이 있습니다. 지금 끝내면 작업이 중간에 멈춥니다. 끝낼까요?"] = "A file operation is still running. Closing now stops it half way. Close anyway?",
         ["즐겨찾기에 추가하지 못했습니다.\n{0}"] = "Could not add to favorites.\n{0}",
         ["즐겨찾기를 가져오지 못했습니다.\n{0}"] = "Could not import the favorites.\n{0}",
         ["즐겨찾기 {0:N0}개를 가져왔습니다."] = "Imported {0:N0} favorites.",
