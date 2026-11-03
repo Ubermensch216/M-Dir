@@ -386,7 +386,14 @@ public sealed class ExplorerBrowserHost : Control
             Navigate(parent);
     }
 
-    public void RefreshView() => _view?.Refresh();
+    public void RefreshView()
+    {
+        _view?.Refresh();
+
+        // Refreshing can rebuild the list window, which comes back with the light theme: apply the colours again.
+        if (IsHandleCreated && !IsDisposed)
+            BeginInvoke(() => _colorHook?.RefreshAppearance());
+    }
 
     /// <summary>
     /// Switches to another tab's state: its history object becomes the live one (later navigation updates it

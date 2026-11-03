@@ -42,6 +42,7 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
     private IntPtr _boldFontBase;
     private bool _backgroundApplied;
     private bool _darkApplied;
+    private IntPtr _themedList;
     private readonly IFolderSizeSource? _sizes;
     private int _sizeColumn = -1;
 
@@ -64,7 +65,10 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
         if (Handle == IntPtr.Zero)
             return;
 
-        IntPtr list = _list != IntPtr.Zero ? _list : NativeMethods.FindDescendant(Handle, "SysListView32");
+        // A refresh can replace the list window, so look it up again rather than trusting the remembered handle.
+        IntPtr list = NativeMethods.FindDescendant(Handle, "SysListView32");
+        if (list == IntPtr.Zero)
+            list = _list;
         if (list != IntPtr.Zero)
         {
             NativeMethods.SendMessage(list, NativeMethods.LVM_ENABLEGROUPVIEW, IntPtr.Zero, IntPtr.Zero);
@@ -287,6 +291,13 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
         bool dark = _isDark();
         uint background = dark ? DarkBackground : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOW);
         uint text = dark ? DarkText : (uint)NativeMethods.GetSysColor(NativeMethods.COLOR_WINDOWTEXT);
+
+        // The shell view creates a new list window on refresh: it starts with the light theme and colours again.
+        if (list != _themedList)
+        {
+            _themedList = list;
+            force = true;
+        }
 
         if (!force && dark == _darkApplied)
         {
