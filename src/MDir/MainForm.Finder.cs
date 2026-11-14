@@ -28,6 +28,10 @@ internal sealed partial class MainForm
 
     internal bool FinderVisible => _finderVisible;
 
+    internal Splitter FinderSplitter => _finderSplitter;
+
+    internal Splitter PreviewSplitter => _previewSplitter;
+
     /// <summary>Tests: answers searches instead of a real M-Finder (set before the panel is first shown).</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal IFinderBackend? FinderBackendOverride { get; set; }
@@ -50,6 +54,9 @@ internal sealed partial class MainForm
         if (_finderPane is not null)
             _finderPane.Visible = _finderVisible;
         _finderSplitter.Visible = _finderVisible;
+        // After the visibility changes: a control shown for the first time gets its window then, and WinForms
+        // re-reads the collection order from the windows' z-order, which can undo an order set earlier.
+        ArrangeWorkArea();
 
         if (_finderVisible)
         {
@@ -79,10 +86,33 @@ internal sealed partial class MainForm
         pane.ShowInFolderRequested += async (_, row) => await ShowFinderRowInFolderAsync(row);
         pane.LocateRequested += (_, _) => LocateFinder();
 
-        // In front of the preview splitter (see the constructor), so it docks between the panes and the preview.
         _workArea.Controls.Add(pane);
-        _workArea.Controls.SetChildIndex(pane, _workArea.Controls.GetChildIndex(_previewSplitter));
         _finderPane = pane;
+    }
+
+    /// <summary>
+    /// Puts the work area's controls in docking order. WinForms docks the last control of the collection first (on
+    /// the outside), so from the end: preview, its splitter, M-Finder, its splitter (right side, outside in); shared
+    /// tree, its splitter (left side); and the panes, which fill what is left, first. A splitter resizes the control
+    /// its outer edge touches, so each splitter must come right after (inside of) the panel it belongs to; with the
+    /// two splitters side by side the M-Finder one would resize the preview splitter instead (a wide empty strip)
+    /// and the M-Finder panel could not be resized at all.
+    /// </summary>
+    private void ArrangeWorkArea()
+    {
+        Control?[] order =
+        [
+            _layoutPanel,
+            _sharedSplitter, _sharedTree,
+            _finderSplitter, _finderPane,
+            _previewSplitter, _previewPane,
+        ];
+        int index = 0;
+        foreach (Control? control in order)
+        {
+            if (control is not null && control.Parent == _workArea)
+                _workArea.Controls.SetChildIndex(control, index++);
+        }
     }
 
     private void PreviewFinderRow(FinderRow? row, bool openPreview)

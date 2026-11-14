@@ -190,6 +190,85 @@ public class FinderTests(ITestOutputHelper output)
         public Task QuitAsync() => Task.CompletedTask;
     }
 
+    /// <summary>Each splitter must touch the panel it belongs to; otherwise one resizes the other splitter.</summary>
+    private static void AssertSideBySide(MainForm form)
+    {
+        FinderPane finder = form.FinderPane!;
+        PreviewPane preview = form.PreviewPane!;
+        Assert.Equal(5, form.FinderSplitter.Width);
+        Assert.Equal(5, form.PreviewSplitter.Width);
+        Assert.Equal(form.LayoutPanel.Right, form.FinderSplitter.Left);
+        Assert.Equal(form.FinderSplitter.Right, finder.Left);
+        Assert.Equal(finder.Right, form.PreviewSplitter.Left);
+        Assert.Equal(form.PreviewSplitter.Right, preview.Left);
+        Assert.Equal(finder.Parent!.ClientSize.Width, preview.Right);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FinderAndPreview_LeaveNoGap_AndBothSplittersResizeTheirOwnPanel(bool finderFirst)
+    {
+        using var dir = new TempDirectory();
+        Run(() => new MainForm(null, Workspace.CreateDefault(ShellLocation.Parse(dir.Path)!), null, null)
+        {
+            Size = new Size(2000, 900),
+            FinderBackendOverride = new FakeBackend([]),
+        }, async form =>
+        {
+            if (finderFirst)
+            {
+                form.ToggleFinder();
+                form.TogglePreview();
+            }
+            else
+            {
+                form.TogglePreview();
+                form.ToggleFinder();
+            }
+
+            await Task.Delay(100);
+            AssertSideBySide(form);
+
+            // Dragging the M-Finder splitter changes the M-Finder panel (and remembers it), never the preview splitter.
+            int before = form.CaptureWorkspace().FinderSplit;
+            form.FinderSplitter.SplitPosition = 420;
+            Assert.Equal(420, form.FinderPane!.Width);
+            AssertSideBySide(form);
+            Assert.NotEqual(before, form.CaptureWorkspace().FinderSplit);
+
+            form.PreviewSplitter.SplitPosition = 380;
+            Assert.Equal(380, form.PreviewPane!.Width);
+            Assert.Equal(420, form.FinderPane.Width);
+            AssertSideBySide(form);
+
+            // Hiding and showing again keeps the order.
+            form.ToggleFinder();
+            form.TogglePreview();
+            form.TogglePreview();
+            form.ToggleFinder();
+            await Task.Delay(100);
+            AssertSideBySide(form);
+        });
+    }
+
+    [Fact]
+    public void Workspace_WithFinderAndPreviewShown_OpensThemSideBySide()
+    {
+        using var dir = new TempDirectory();
+        Workspace basis = Workspace.CreateDefault(ShellLocation.Parse(dir.Path)!);
+        var workspace = new Workspace { Panes = basis.Panes, FinderVisible = true, PreviewVisible = true, FinderSplit = 2500, PreviewSplit = 2000 };
+        Run(() => new MainForm(null, workspace, null, null)
+        {
+            Size = new Size(2000, 900),
+            FinderBackendOverride = new FakeBackend([]),
+        }, async form =>
+        {
+            await Task.Delay(200);
+            AssertSideBySide(form);
+        });
+    }
+
     [Fact]
     public void FinderPanel_SitsLeftOfThePreview_SearchesAndPreviewsTheClickedResult()
     {

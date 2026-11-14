@@ -100,10 +100,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _workArea.Controls.Add(_layoutPanel);
         _workArea.Controls.Add(_sharedSplitter);
         _workArea.Controls.Add(_previewSplitter);
-        // The M-Finder panel sits between the panes and the preview: its splitter (and later the panel) go just
-        // in front of the preview splitter, so they dock after the preview.
         _workArea.Controls.Add(_finderSplitter);
-        _workArea.Controls.SetChildIndex(_finderSplitter, _workArea.Controls.GetChildIndex(_previewSplitter));
+        ArrangeWorkArea();
         Controls.Add(_workArea);
         Controls.Add(toolbar);
         Controls.Add(menu);
@@ -401,6 +399,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (_previewPane is not null)
             _previewPane.Visible = _previewVisible;
         _previewSplitter.Visible = _previewVisible;
+        ArrangeWorkArea();
 
         if (_previewVisible)
         {
@@ -662,6 +661,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (_sharedTree is not null)
             _sharedTree.Visible = show;
         _sharedSplitter.Visible = show;
+        ArrangeWorkArea();
         if (show)
         {
             ApplySharedTreeWidth();
