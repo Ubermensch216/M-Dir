@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Assets\M-Dir.ico" LogicalName="M-Dir.ico" />
+    <EmbeddedResource Include="Assets\M-Finder.ico" LogicalName="M-Finder.ico" />
     <InternalsVisibleTo Include="MDir.Tests" />
   </ItemGroup>
 

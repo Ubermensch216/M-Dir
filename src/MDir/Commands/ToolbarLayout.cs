@@ -15,7 +15,7 @@ internal static class ToolbarLayout
         "go.back", "go.forward", "go.up", "view.refresh", Separator,
         "tab.new", "file.newFolder", Separator,
         "edit.cut", "edit.copy", "edit.paste", "edit.delete", Separator,
-        "view.tree", "view.filter", "view.preview", Layouts,
+        "view.tree", "view.filter", "view.preview", Layouts, "view.finder",
     ];
 
     /// <summary>

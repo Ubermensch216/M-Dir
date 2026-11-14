@@ -42,6 +42,9 @@ internal sealed class Command(string id, string text, Action execute)
     /// <summary>A Segoe Fluent Icons character for the toolbar, or null.</summary>
     public string? Glyph { get; init; }
 
+    /// <summary>A picture for the toolbar button and menu item (used instead of <see cref="Glyph"/>), or null.</summary>
+    public Image? Image { get; init; }
+
     /// <summary>The text without the access key marker, for dialogs and tooltips.</summary>
     public string DisplayText => AccessKeySuffix.Replace(Text, string.Empty).Replace("&", string.Empty).Replace("...", string.Empty).Trim();
 

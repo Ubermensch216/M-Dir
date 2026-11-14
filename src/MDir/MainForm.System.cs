@@ -315,6 +315,8 @@ internal sealed partial class MainForm
         }
         if (_sharedTree is not null)
             _sharedTree.DarkMode = dark;
+        if (_finderPane is not null)
+            _finderPane.DarkMode = dark;
     }
 
     internal void SetSortHighlight(bool enabled)
@@ -377,6 +379,7 @@ internal sealed partial class MainForm
             pane.ApplyLanguage();
         if (_previewPane is not null)
             Loc.Apply(_previewPane);
+        _finderPane?.ApplyLanguage();
 
         UpdateActivePaneState();
         RefreshAllMenus();

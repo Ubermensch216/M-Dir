@@ -80,6 +80,9 @@ internal sealed class Workspace
     /// <summary>The preview takes 30% of the window by default.</summary>
     public const int DefaultPreviewSplit = 3000;
 
+    /// <summary>The M-Finder search panel takes 30% of the window by default.</summary>
+    public const int DefaultFinderSplit = 3000;
+
     public PaneLayout Layout { get; init; } = PaneLayout.Default;
 
     /// <summary>One tree for the whole window, following the active pane, instead of one tree per pane.</summary>
@@ -94,6 +97,12 @@ internal sealed class Workspace
 
     /// <summary>Preview panel width as a share of the window, in 1/10000.</summary>
     public int PreviewSplit { get; init; } = DefaultPreviewSplit;
+
+    /// <summary>The M-Finder search panel is shown (left of the preview when both are).</summary>
+    public bool FinderVisible { get; init; }
+
+    /// <summary>M-Finder panel width as a share of the window, in 1/10000.</summary>
+    public int FinderSplit { get; init; } = DefaultFinderSplit;
 
     /// <summary>Splitter ratios (1/10000) in the layout's pre-order, like Q-Dir's SP0/SP1/SP2.</summary>
     public IReadOnlyList<int> Ratios { get; init; } = PaneLayout.Default.DefaultRatios;
@@ -161,6 +170,8 @@ internal sealed class Workspace
             SharedTreeSplit = Math.Clamp(ini.GetInt(Main, "SharedTreeSplit", DefaultTreeSplit), MinTreeSplit, MaxTreeSplit),
             PreviewVisible = ini.GetBool(Main, "Preview", false),
             PreviewSplit = Math.Clamp(ini.GetInt(Main, "PreviewSplit", DefaultPreviewSplit), MinTreeSplit, MaxTreeSplit),
+            FinderVisible = ini.GetBool(Main, "Finder", false),
+            FinderSplit = Math.Clamp(ini.GetInt(Main, "FinderSplit", DefaultFinderSplit), MinTreeSplit, MaxTreeSplit),
             Window = WindowPlacement.TryParse(ini.Get(Main, "Window")),
             Panes = [.. Enumerable.Range(0, PaneLayout.MaxPanes).Select(i => ReadPane(ini, i, fallback))],
         };
@@ -179,6 +190,8 @@ internal sealed class Workspace
         ini.Set(Main, "SharedTreeSplit", SharedTreeSplit);
         ini.Set(Main, "Preview", PreviewVisible);
         ini.Set(Main, "PreviewSplit", PreviewSplit);
+        ini.Set(Main, "Finder", FinderVisible);
+        ini.Set(Main, "FinderSplit", FinderSplit);
         if (Window is not null)
             ini.Set(Main, "Window", Window.ToString());
 

@@ -72,6 +72,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             {
                 if (pane == _activePane)
                 {
+                    _previewFromFinder = false;
                     SchedulePreview();
                     UpdateSizeForSelection();
                     RefreshCommandStates();
@@ -99,6 +100,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _workArea.Controls.Add(_layoutPanel);
         _workArea.Controls.Add(_sharedSplitter);
         _workArea.Controls.Add(_previewSplitter);
+        // The M-Finder panel sits between the panes and the preview: its splitter (and later the panel) go just
+        // in front of the preview splitter, so they dock after the preview.
+        _workArea.Controls.Add(_finderSplitter);
+        _workArea.Controls.SetChildIndex(_finderSplitter, _workArea.Controls.GetChildIndex(_previewSplitter));
         Controls.Add(_workArea);
         Controls.Add(toolbar);
         Controls.Add(menu);
@@ -108,8 +113,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             ApplySharedTreeWidth();
             ApplyPreviewWidth();
+            ApplyFinderWidth();
         };
         _previewSplitter.SplitterMoved += (_, _) => OnPreviewSplitterMoved();
+        _finderSplitter.SplitterMoved += (_, _) => OnFinderSplitterMoved();
         _previewTimer.Tick += (_, _) => RefreshPreview();
         _slideshowTimer.Tick += (_, _) => OnSlideshowTick();
 
@@ -153,6 +160,8 @@ internal sealed partial class MainForm : Form, IMessageFilter
             SharedTreeSplit = _sharedTreeSplit,
             PreviewVisible = _previewVisible,
             PreviewSplit = _previewSplit,
+            FinderVisible = _finderVisible,
+            FinderSplit = _finderSplit,
             Window = new WindowPlacement(bounds.X, bounds.Y, bounds.Width, bounds.Height, WindowState == FormWindowState.Maximized),
             Panes = [.. _panes.Select(pane => pane.CaptureState())],
         };
@@ -181,6 +190,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
         _previewVisible = workspace.PreviewVisible;
         _previewSplit = workspace.PreviewSplit;
         UpdatePreview();
+        _finderVisible = workspace.FinderVisible;
+        _finderSplit = workspace.FinderSplit;
+        UpdateFinder();
         SetMultilineTabs(workspace.MultilineTabs);
         if (applyWindow && workspace.Window is { } window)
             ApplyWindowPlacement(window);
@@ -294,6 +306,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
             e.Cancel = true;
         }
 
+        if (!e.Cancel)
+            StopFinderIfStartedHere();
+
         if (!e.Cancel && _profile is { Settings.AutoWorkspace: true })
         {
             try
@@ -313,6 +328,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         {
             _previewTimer.Dispose();
             _slideshowTimer.Dispose();
+            _finderClient?.Dispose();
             _folderSizeColumn?.Dispose();
             _stateTimer.Dispose();
             if (_tray is not null)
@@ -389,6 +405,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
         if (_previewVisible)
         {
             ApplyPreviewWidth();
+            ApplyFinderWidth();
             SchedulePreview();
         }
         else
@@ -419,6 +436,14 @@ internal sealed partial class MainForm : Form, IMessageFilter
 
         try
         {
+            if (_previewFromFinder)
+            {
+                // A result clicked in the M-Finder panel.
+                ShellLocation? item = _finderPreviewRow is { } row ? ShellLocation.Parse(row.FullPath) : null;
+                await pane.ShowAsync(item, item is null ? 0 : 1);
+                return;
+            }
+
             ExplorerBrowserHost browser = ActiveBrowser;
             await pane.ShowAsync(browser.SelectedCount == 1 ? browser.GetFirstSelected() : null, browser.SelectedCount);
         }
@@ -463,6 +488,9 @@ internal sealed partial class MainForm : Form, IMessageFilter
     /// </summary>
     internal bool StepPreviewItem(int step, bool imagesOnly, bool wrap = false)
     {
+        if (_previewFromFinder && _finderPane is { } finder)
+            return finder.StepSelection(step, row => !imagesOnly || PreviewPane.IsImagePath(row.Name), wrap);
+
         if (CurrentFolderPath is null || step == 0)
             return false;
 
@@ -493,8 +521,10 @@ internal sealed partial class MainForm : Form, IMessageFilter
             return;
 
         int available = _workArea.ClientSize.Width - _previewSplitter.Width;
+        // Leave room for the M-Finder panel at its smallest when it is shown too.
+        int others = _finderVisible ? _finderSplitter.Width + _finderSplitter.MinSize : 0;
         int width = Math.Clamp(available * _previewSplit / PaneLayout.RatioScale, _previewSplitter.MinSize,
-            Math.Max(_previewSplitter.MinSize, available - _previewSplitter.MinExtra));
+            Math.Max(_previewSplitter.MinSize, available - others - _previewSplitter.MinExtra));
         if (_previewPane.Width == width)
             return;
 
@@ -781,6 +811,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _activePane = pane;
             pane.IsActive = true;
             UpdateActivePaneState();
+            _previewFromFinder = false;
             SchedulePreview();
         }
 

@@ -261,6 +261,7 @@ windowplacement=x;y;w;h|sw=1
 
 | 단계 | 상태 | 비고 |
 |---|---|---|
+| M-Finder 연동 | ✅ 완료 (2026-11-14) | 도구 모음의 레이아웃 드롭다운 뒤 M-Finder 아이콘(`view.finder`, Ctrl+Shift+M)으로 오른쪽 검색 창을 엽니다. 배치는 패널 \| M-Finder \| 미리보기(좌우 나란히, 폭 비율은 `.mdr`의 `Finder`·`FinderSplit`). 검색은 M-Finder(Python)가 하고 M-Dir는 사용자별 명명된 파이프(`M-Finder-<SID>`)로 요청합니다(`Finder/FinderClient.cs`). 실행 중인 M-Finder가 없으면 `gui --headless`로 창 없이 띄우고, 직접 띄운 것만 M-Dir 종료 시 `quit`으로 끝냅니다. M-Finder 위치는 `M-Dir.ini [Finder] Path`(exe 또는 소스의 `mfinder\__main__.py`, 도구 > M-Finder 위치 지정). 가상 목록(200개씩 페이지 요청), 필터·대소문자·단어·경로·정규식, 열 클릭 정렬, 색인 진행 표시, 색인 변경 시 2초 간격 새로 고침. 결과를 클릭하면 미리보기 창이 그 파일을 보여 주고(◀▶·슬라이드쇼도 결과 목록을 따름), 패널에서 다시 선택하면 패널 쪽으로 돌아갑니다. Enter = 열기(폴더는 활성 패널에서), Ctrl+Enter = 폴더에서 보기, 끌어서 놓기, 경로 복사. M-Finder 쪽: `--headless`, IPC `filters`·`quit`, `status`의 `ready`·`rev`, 같은 검색의 결과 목록 재사용. 포터블 사본 + 실제 M-Finder로 연결·자동 시작·자동 종료를 확인함. 테스트 524개 중 522개 통과(실패 2개는 임시 폴더의 정션 삭제 권한 문제로 이번 변경과 무관). |
 | 0단계 | ✅ 완료 (2026-10-28) | `MDir.slnx`, `src/MDir`(WinForms, .NET 10, 실행 파일 `M-Dir.exe`), `tests/MDir.Tests`(xUnit) |
 | 1단계 | ✅ 완료 (2026-10-28) | `ExplorerBrowserHost`(IExplorerBrowser 호스팅), 자체 탐색 기록, 패널 단위 보기 모드, 키보드 라우팅(화살표·Tab·Backspace·셸 단축키), 마우스 뒤로/앞으로 버튼, 주소창 자동 완성. 테스트 14개 통과(통합 테스트 3개는 실제 셸 뷰로 검증) |
 | 12단계 | ✅ 대부분 완료 (2026-10-30), 설치 프로그램 제외 | 한국어/영어 전환(`Loc`, 내장 영어 표 + `Lang\*.lng` 언어 팩), 자체 포함 단일 exe 게시(`publish.ps1`, 약 49MB)와 포터블 zip. 번역하지 못한 동적 문구가 남아 있음. |

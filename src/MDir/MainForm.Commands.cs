@@ -165,6 +165,14 @@ internal sealed partial class MainForm
         Add("view.colorFilter", "색상 필터 사용(&C)", view, () => SetColorFilterEnabled(!Settings.ColorFilterEnabled), check: () => Settings.ColorFilterEnabled);
         Add("view.editColorFilter", "색상 필터 편집(&E)...", view, EditColorFilter);
         Add("view.preview", "미리보기 창(&P)", view, TogglePreview, [Keys.F12], check: () => _previewVisible);
+        _commands.Add(new Command("view.finder", "M-Finder 검색 창(&M)", ToggleFinder)
+        {
+            Category = view,
+            DefaultShortcuts = [Keys.Control | Keys.Shift | Keys.M],
+            IsChecked = () => _finderVisible,
+            Image = FinderIcon(),
+        });
+        Add("tools.finderLocation", "M-Finder 위치 지정(&M)...", tools, LocateFinder);
         Add("view.sortHighlight", "정렬 열 강조(&H)", view, () => SetSortHighlight(!Settings.SortColumnHighlight), check: () => Settings.SortColumnHighlight);
 
         // Go
@@ -289,7 +297,7 @@ internal sealed partial class MainForm
                 Sep(), Sub("들여쓰기(&I)", [.. TreeOptions.IndentChoices.Select(indent => (ToolStripItem)Item($"view.treeIndent.{indent}"))])),
             Sep(),
             Item("view.filter"), Item("view.colorFilter"), Item("view.editColorFilter"), Sep(),
-            Item("view.preview"), Item("view.autoFolderSize"), Item("view.folderSizeColumn"), Item("view.sortHighlight"),
+            Item("view.preview"), Item("view.finder"), Item("view.autoFolderSize"), Item("view.folderSizeColumn"), Item("view.sortHighlight"),
         ];
 
         ToolStripItem[] Go() => [Item("go.back"), Item("go.forward"), Item("go.up"), Sep(), Item("go.address")];
@@ -311,7 +319,7 @@ internal sealed partial class MainForm
         [
             Item("tools.search"), Item("tools.folderSize"), Item("tools.multiRename"), Item("tools.compareFolders"), Item("tools.hash"), Item("tools.createHardLink"), Sep(),
             Item("tools.openCmd"), Item("tools.openPowerShell"), Item("tools.openExplorer"), Sep(),
-            Item("tools.shortcuts"), Item("tools.toolbar"),
+            Item("tools.shortcuts"), Item("tools.toolbar"), Item("tools.finderLocation"),
         ];
 
         ToolStripItem[] Window() =>
@@ -360,7 +368,7 @@ internal sealed partial class MainForm
 
     private ToolStripMenuItem CreateMenuItem(Command command)
     {
-        var item = new ToolStripMenuItem(command.Text) { Tag = command };
+        var item = new ToolStripMenuItem(command.Text) { Tag = command, Image = command.Image };
         item.Click += (_, _) => Run(command);
         item.ShortcutKeyDisplayString = _commands.ShortcutText(command);
         return item;
@@ -403,12 +411,19 @@ internal sealed partial class MainForm
             else
             {
                 Command command = _commands.Get(token);
-                var button = new ToolStripButton(command.Glyph ?? command.DisplayText)
-                {
-                    DisplayStyle = ToolStripItemDisplayStyle.Text,
-                    Tag = command,
-                    Font = command.Glyph is null ? toolbar.Font : Glyphs.Font,
-                };
+                var button = command.Image is { } image
+                    ? new ToolStripButton(command.DisplayText, image)
+                    {
+                        DisplayStyle = ToolStripItemDisplayStyle.Image,
+                        ImageScaling = ToolStripItemImageScaling.None,
+                        Tag = command,
+                    }
+                    : new ToolStripButton(command.Glyph ?? command.DisplayText)
+                    {
+                        DisplayStyle = ToolStripItemDisplayStyle.Text,
+                        Tag = command,
+                        Font = command.Glyph is null ? toolbar.Font : Glyphs.Font,
+                    };
                 button.Click += (_, _) => Run(command);
                 toolbar.Items.Add(button);
                 toolbarTips.Add((command, button));
