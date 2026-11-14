@@ -43,6 +43,7 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
     private bool _backgroundApplied;
     private bool _darkApplied;
     private IntPtr _themedList;
+    private HeaderHook? _headerHook;
     private readonly IFolderSizeSource? _sizes;
     private int _sizeColumn = -1;
 
@@ -90,6 +91,8 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
             _boldFont = IntPtr.Zero;
         }
 
+        _headerHook?.Dispose();
+        _headerHook = null;
         _folder = null;
     }
 
@@ -159,7 +162,7 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
         }
 
         if (style.Text is { } text)
-            draw->ClrText = ToColorRef(text);
+            draw->ClrText = RuleTextColor(text, style.Background);
         if (style.Background is { } background)
             draw->ClrTextBk = ToColorRef(background);
         if (style.Bold && GetBoldFont(draw->Nmcd.Hdr.HwndFrom) is var font && font != IntPtr.Zero)
@@ -187,7 +190,7 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
 
         var area = new NativeRect(cell.Left + 4, cell.Top, cell.Right - 6, cell.Bottom);
         uint color = rules?.Resolve(name, true, hidden)?.Text is { } styled
-            ? ToColorRef(styled)
+            ? RuleTextColor(styled, rules.Resolve(name, true, hidden)?.Background)
             : ListTextColor(list);
         GdiText.Draw(draw->Nmcd.Hdc, text, ref area, color);
         _sizes.Drawn();
@@ -311,6 +314,8 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
         }
 
         _darkApplied = dark;
+        _headerHook ??= new HeaderHook(_isDark);
+        _headerHook.Attach(list);
         AppAppearance.SetControlTheme(list, dark);
         AppAppearance.SetHeaderTheme(NativeMethods.SendMessage(list, NativeMethods.LVM_GETHEADER, IntPtr.Zero, IntPtr.Zero), dark);
         NativeMethods.SendMessage(list, NativeMethods.LVM_SETBKCOLOR, IntPtr.Zero, (IntPtr)background);
@@ -340,7 +345,92 @@ internal sealed unsafe class ColorListHook : NativeWindow, IDisposable
         return _boldFont;
     }
 
+    /// <summary>
+    /// A rule's text colour as a COLORREF. On the dark theme a colour that is too dark for its background (the
+    /// classic green folders) is lightened until it reads, keeping its hue.
+    /// </summary>
+    private uint RuleTextColor(Color text, Color? background)
+    {
+        if (!_isDark())
+            return ToColorRef(text);
+
+        Color back = background ?? Color.FromArgb(0x20, 0x20, 0x20);
+        double backLuminance = Luminance(back);
+        for (int step = 0; step <= 10 && Contrast(Luminance(text), backLuminance) < 4.5; step++)
+        {
+            double mix = 0.1;
+            text = Color.FromArgb(
+                (int)(text.R + (255 - text.R) * mix),
+                (int)(text.G + (255 - text.G) * mix),
+                (int)(text.B + (255 - text.B) * mix));
+        }
+
+        return ToColorRef(text);
+    }
+
+    private static double Contrast(double a, double b) => (Math.Max(a, b) + 0.05) / (Math.Min(a, b) + 0.05);
+
+    private static double Luminance(Color color)
+    {
+        static double Channel(int value)
+        {
+            double v = value / 255.0;
+            return v <= 0.03928 ? v / 12.92 : Math.Pow((v + 0.055) / 1.055, 2.4);
+        }
+
+        return 0.2126 * Channel(color.R) + 0.7152 * Channel(color.G) + 0.0722 * Channel(color.B);
+    }
+
     private static uint ToColorRef(Color color) => (uint)(color.R | (color.G << 8) | (color.B << 16));
+
+    /// <summary>
+    /// The list handles the custom-draw notifications of its column header itself (they never reach the shell view), so
+    /// the list is subclassed to give the themed header light text on the dark theme, where it keeps dark text.
+    /// </summary>
+    private sealed class HeaderHook(Func<bool> isDark) : NativeWindow, IDisposable
+    {
+        public void Attach(IntPtr list)
+        {
+            if (Handle == list)
+                return;
+
+            if (Handle != IntPtr.Zero)
+                ReleaseHandle();
+            if (list != IntPtr.Zero)
+                AssignHandle(list);
+        }
+
+        public void Dispose()
+        {
+            if (Handle != IntPtr.Zero)
+                ReleaseHandle();
+        }
+
+        protected override void WndProc(ref Message m)
+        {
+            if (m.Msg == WM_NOTIFY && isDark())
+            {
+                var draw = (NmCustomDraw*)m.LParam;
+                if (draw->Hdr.Code == NM_CUSTOMDRAW && NativeMethods.GetClassName(draw->Hdr.HwndFrom) == "SysHeader32")
+                {
+                    if (draw->DrawStage == CDDS_PREPAINT)
+                    {
+                        m.Result = (IntPtr)CDRF_NOTIFYITEMDRAW;
+                        return;
+                    }
+
+                    if (draw->DrawStage == CDDS_ITEMPREPAINT)
+                    {
+                        GdiText.SetColor(draw->Hdc, DarkText);
+                        m.Result = (IntPtr)CDRF_NEWFONT;
+                        return;
+                    }
+                }
+            }
+
+            base.WndProc(ref m);
+        }
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct ListColumn

@@ -39,6 +39,9 @@ internal static partial class GdiText
         SetBkMode(hdc, oldMode);
     }
 
+    /// <summary>Sets the text colour of a DC (a custom-draw handler uses it for the text the control draws next).</summary>
+    public static void SetColor(IntPtr hdc, uint color) => SetTextColor(hdc, color);
+
     [LibraryImport("user32.dll", EntryPoint = "DrawTextW", StringMarshalling = StringMarshalling.Utf16)]
     private static partial int DrawText(IntPtr hdc, string text, int length, ref NativeRect area, uint format);
 
