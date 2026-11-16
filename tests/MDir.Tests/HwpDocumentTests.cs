@@ -163,6 +163,48 @@ public class HwpDocumentTests
     [Fact]
     public void Hwpx_WithoutSections_IsNull() => Assert.Null(HwpDocument.Read(Zip(("mimetype", Utf8("application/hwp+zip")))));
 
+    [Fact]
+    public void Hwpx_Ignores3DAndNoneStrikeoutShapes_AndKeepsSolidStrikeout()
+    {
+        string header = $"""
+            <hh:head {Ns}><hh:refList>
+              <hh:charProperties>
+                <hh:charPr id="0" height="1000" textColor="#000000" shadeColor="none"><hh:strikeout shape="3D" color="#000000"/></hh:charPr>
+                <hh:charPr id="1" height="1000" textColor="#000000" shadeColor="none"><hh:strikeout shape="NONE" color="#000000"/></hh:charPr>
+                <hh:charPr id="2" height="1000" textColor="#000000" shadeColor="none"><hh:strikeout type="NONE" shape="SOLID" color="#000000"/></hh:charPr>
+                <hh:charPr id="3" height="1000" textColor="#000000" shadeColor="none"><hh:strikeout shape="SOLID" color="#FF0000"/></hh:charPr>
+              </hh:charProperties>
+              <hh:paraProperties><hh:paraPr id="0"/></hh:paraProperties>
+            </hh:refList></hh:head>
+            """;
+        byte[] bytes = Zip(
+            ("mimetype", Utf8("application/hwp+zip")),
+            ("Contents/header.xml", Utf8(header)),
+            ("Contents/section0.xml", Utf8(Section(P("가", chars: 0) + P("나", chars: 1) + P("다", chars: 2) + P("라", chars: 3)))));
+
+        HwpDoc doc = HwpDocument.Read(bytes)!;
+        var runs = doc.Blocks.OfType<HwpPara>().Select(p => (HwpRun)p.Runs[0]).ToList();
+
+        Assert.False(runs[0].Strike);
+        Assert.False(runs[1].Strike);
+        Assert.False(runs[2].Strike);
+        Assert.True(runs[3].Strike);
+    }
+
+    [Fact]
+    public void Html_OffsetsHangingIndentByItsWidth_SoTheFirstLineStaysAtLeft()
+    {
+        using var dir = new TempDirectory();
+        var doc = new HwpDoc();
+        var para = new HwpPara { Left = -1, First = -94.97 };
+        para.Runs.Add(new HwpRun { Text = "[제목]" });
+        doc.Blocks.Add(para);
+
+        string html = File.ReadAllText(HwpHtml.Render(doc, dir.Path).HtmlPath);
+
+        Assert.Contains("margin-left:93.97pt;text-indent:-94.97pt", html);
+    }
+
     // ---- HWP builders ----
 
     private static byte[] Record(int tag, int level, byte[] payload)

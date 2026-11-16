@@ -138,8 +138,8 @@ internal sealed partial class HwpxReader
                 shade is null or "none" ? null : HexColor(shade),
                 Child(cp, "bold") is not null,
                 Child(cp, "italic") is not null,
-                underline is not null && !IsNone((string?)underline.Attribute("type")),
-                strike is not null && !IsNone((string?)strike.Attribute("shape")),
+                underline is not null && !IsNone((string?)underline.Attribute("type")) && !IsNone((string?)underline.Attribute("shape") ?? "SOLID"),
+                HasStrike(strike),
                 Child(cp, "supscript") is not null ? 1 : Child(cp, "subscript") is not null ? -1 : 0,
                 fontId is not null && _fonts.TryGetValue(fontId, out string? font) ? font : null,
                 HwpSpacing.ToEm(Number(Child(cp, "spacing"), "hangul"), Number(Child(cp, "ratio"), "hangul", 100)));
@@ -396,6 +396,13 @@ internal sealed partial class HwpxReader
         double.TryParse((string?)el?.Attribute(attribute), NumberStyles.Float, CultureInfo.InvariantCulture, out double value) ? value : fallback;
 
     private static bool IsNone(string? value) => string.IsNullOrEmpty(value) || string.Equals(value, "NONE", StringComparison.OrdinalIgnoreCase);
+
+    // Hancom Office Hangul writes <hh:strikeout shape="3D"/> on non-struck runs when converting/saving; 3D is not a text strikeout.
+    private static bool HasStrike(XElement? strike) =>
+        strike is not null
+        && !IsNone((string?)strike.Attribute("type") ?? "SOLID")
+        && !IsNone((string?)strike.Attribute("shape"))
+        && !string.Equals((string?)strike.Attribute("shape"), "3D", StringComparison.OrdinalIgnoreCase);
 
     /// <summary>"#RRGGBB" / "RRGGBB" / "FFRRGGBB" to "#rrggbb"; anything else to null.</summary>
     internal static string? HexColor(string? value)

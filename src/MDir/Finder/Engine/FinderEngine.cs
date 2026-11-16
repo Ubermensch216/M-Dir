@@ -15,6 +15,7 @@ internal sealed class FinderEngine : IFinderBackend, IDisposable
     private readonly string _databaseFile;
     private readonly Func<bool>? _requestElevation;
     private readonly object _stateLock = new();
+    private readonly object _elevationLock = new();
     private readonly object _buildGate = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly List<IDisposable> _monitors = [];
@@ -75,6 +76,7 @@ internal sealed class FinderEngine : IFinderBackend, IDisposable
     {
         try
         {
+            SetStatus("색인을 불러오는 중...");
             if (Load())
             {
                 StartMonitors();
@@ -112,7 +114,9 @@ internal sealed class FinderEngine : IFinderBackend, IDisposable
         if (!_options.UseMft)
             throw new IOException("NTFS 빠른 색인을 쓰지 않도록 설정되어 있습니다.");
 
-        lock (_stateLock)
+        // Never hold _stateLock while asking the UI thread (Invoke) or waiting on UAC; StatusAsync() runs on the UI thread.
+        bool allowed;
+        lock (_elevationLock)
         {
             if (_elevationAllowed is null)
             {
@@ -123,9 +127,11 @@ internal sealed class FinderEngine : IFinderBackend, IDisposable
                     _ => _requestElevation?.Invoke() ?? false,
                 };
             }
+
+            allowed = _elevationAllowed == true;
         }
 
-        if (_elevationAllowed != true)
+        if (!allowed)
             throw new IOException("관리자 권한을 쓰지 않으므로 NTFS 빠른 색인을 쓸 수 없습니다.");
 
         FinderVolumeHelper.EnsureStarted();

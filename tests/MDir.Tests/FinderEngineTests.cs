@@ -857,6 +857,35 @@ public class FinderEngineTests
         Assert.True(asked <= 1);
     }
 
+    [Fact]
+    public async Task Engine_StatusAsyncDoesNotDeadlockWhileElevationPromptWaitsOnTheCallerThread()
+    {
+        if (FinderNtfs.IsElevated())
+            return;
+
+        string systemRoot = Path.GetPathRoot(Environment.SystemDirectory)!;
+        if (!FinderNtfs.IsNtfsRoot(systemRoot))
+            return;
+
+        using var data = new TempDirectory();
+        var promptEntered = new ManualResetEventSlim();
+        var statusDone = new ManualResetEventSlim();
+        var options = new FinderOptions { Roots = [systemRoot], UseMft = true, Monitor = false, FolderSizes = false };
+        using var engine = new FinderEngine(options, data.File("deadlock.mfi"), () =>
+        {
+            promptEntered.Set();
+            Assert.True(statusDone.Wait(TimeSpan.FromSeconds(5)), "StatusAsync deadlocked while waiting on elevation prompt");
+            return false;
+        });
+
+        // Mirrors MainForm: the background thread waits on the UI thread (Invoke), while the UI thread calls StatusAsync().
+        engine.Start();
+        Assert.True(promptEntered.Wait(TimeSpan.FromSeconds(5)));
+        FinderStatus status = await engine.StatusAsync().WaitAsync(TimeSpan.FromSeconds(2));
+        Assert.False(status.Ready);
+        statusDone.Set();
+    }
+
     // ---- options ----
 
     [Fact]

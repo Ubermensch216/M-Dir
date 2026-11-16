@@ -82,8 +82,9 @@ internal static class HwpHtml
         {
             StringBuilder html = Html;
             html.Append("<p style=\"text-align:").Append(para.Align);
-            if (para.Left != 0)
-                html.Append(";margin-left:").Append(Pt(para.Left));
+            double left = para.First < 0 ? para.Left - para.First : para.Left;
+            if (left != 0)
+                html.Append(";margin-left:").Append(Pt(left));
             if (para.First != 0)
                 html.Append(";text-indent:").Append(Pt(para.First));
             if (para.Before > 0)
@@ -239,7 +240,7 @@ internal static class HwpDocument
     private const long MaxFileBytes = 256L * 1024 * 1024;
 
     /// <summary>Bumped when the drawing changes, so pages drawn by an older M-Dir are not reused.</summary>
-    private const int RenderVersion = 2;
+    private const int RenderVersion = 3;
 
     private static readonly TimeSpan CacheAge = TimeSpan.FromDays(3);
     private static int _pruned;
