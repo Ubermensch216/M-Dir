@@ -257,6 +257,21 @@ internal sealed class PreviewPane : Panel
             return;
         }
 
+        // Hancom's own preview handler paints the first page only, so .hwp/.hwpx show the whole body text instead
+        // (documents that cannot be read this way, e.g. password-protected, fall through to the handler).
+        if (HwpText.IsHwpPath(path))
+        {
+            TextPreviewData? hwp = await LoadOrNull(() => HwpText.Read(path));
+            if (version != _version)
+                return;
+
+            if (hwp is not null)
+            {
+                ShowText(name, type, size, hwp);
+                return;
+            }
+        }
+
         if (MediaView.IsMedia(path))
         {
             var player = new MediaView { Dock = DockStyle.Fill };
@@ -418,7 +433,7 @@ internal sealed class PreviewPane : Panel
     }
 
     /// <summary>Runs a load on a worker thread; failures that mean "cannot be shown" become null.</summary>
-    private static Task<T?> LoadOrNull<T>(Func<T> load) where T : class =>
+    private static Task<T?> LoadOrNull<T>(Func<T?> load) where T : class =>
         Task.Run(() =>
         {
             try
