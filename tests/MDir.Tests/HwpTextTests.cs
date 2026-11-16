@@ -248,8 +248,12 @@ public class HwpTextTests
 
     // ---- preview pane ----
 
+    /// <summary>
+    /// A made-up .hwpx (not one Hancom can open): with Hancom's handler or Office installed it is handled by them,
+    /// otherwise the pane falls back to the body text. Never an error page.
+    /// </summary>
     [Fact]
-    public void PreviewPane_ShowsWholeHwpxBodyInTheTextViewer()
+    public void PreviewPane_ShowsHwpxWithHancomOrFallsBackToBodyText()
     {
         using var dir = new TempDirectory();
         File.WriteAllBytes(dir.File("보고서.hwpx"), Hwpx(("Contents/section0.xml", Section(Para("첫 쪽") + Para("마지막 쪽", pageBreak: true)))));
@@ -265,9 +269,16 @@ public class HwpTextTests
         {
             await pane!.ShowAsync(ShellLocation.Parse(dir.File("보고서.hwpx"))!, 1);
 
-            Assert.Equal(PreviewKind.Text, pane.Kind);
-            Assert.Contains("마지막 쪽", ((TextBox)pane.View!).Text);
-            Assert.Contains("첫 쪽", ((TextBox)pane.View!).Text);
+            if (pane.Kind == PreviewKind.Text)
+            {
+                Assert.Contains("첫 쪽", ((TextBox)pane.View!).Text);
+                Assert.Contains("마지막 쪽", ((TextBox)pane.View!).Text);
+            }
+            else
+            {
+                Assert.Equal(PreviewKind.Handler, pane.Kind);
+                Assert.DoesNotContain("변환하는 중", pane.Detail);
+            }
         });
     }
 }
