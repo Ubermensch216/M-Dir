@@ -317,6 +317,7 @@ internal sealed partial class MainForm
             _sharedTree.DarkMode = dark;
         if (_finderPane is not null)
             _finderPane.DarkMode = dark;
+        _previewPane?.ApplyTheme();
     }
 
     internal void SetSortHighlight(bool enabled)

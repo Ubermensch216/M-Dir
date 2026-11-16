@@ -259,6 +259,32 @@ public class PreviewPaneTests(ITestOutputHelper output)
     private static ShellLocation Loc(string path) => ShellLocation.Parse(path)!;
 
     [Fact]
+    public void Pane_HasAnOutline_AndATintedTitleBlockSeparatedFromThePreview()
+    {
+        RunPane(async (form, pane) =>
+        {
+            await pane.ShowAsync(Loc(@"C:\Windows"), 3);
+            await Task.Delay(100);
+            Assert.Equal(new Padding(1), pane.Padding);
+            Assert.NotEqual(pane.BackColor, pane.FrameColor);
+
+            UiTest.SaveScreenshot(form, "preview-frame.png");
+            using Bitmap picture = UiTest.Capture(form);
+            Point screen = pane.PointToScreen(Point.Empty);
+            Point origin = new(screen.X - form.Left, screen.Y - form.Top);
+            Point inner = new(origin.X + pane.Width / 2, origin.Y + pane.Height / 2);
+            Color edge = picture.GetPixel(origin.X, inner.Y);
+            Color outline = picture.GetPixel(origin.X + pane.Width / 2, origin.Y);
+            // Both the side and the top of the pane carry the frame colour, which the contents do not.
+            Assert.Equal(pane.FrameColor.ToArgb(), edge.ToArgb());
+            Assert.Equal(pane.FrameColor.ToArgb(), outline.ToArgb());
+            Assert.NotEqual(pane.FrameColor.ToArgb(), picture.GetPixel(inner.X, inner.Y).ToArgb());
+            // The title block is tinted against the pane's own background.
+            Assert.NotEqual(pane.BackColor.ToArgb(), picture.GetPixel(origin.X + 3, origin.Y + 3).ToArgb());
+        });
+    }
+
+    [Fact]
     public void NoSelectionAndMultipleSelection_ShowMessages()
     {
         RunPane(async (_, pane) =>

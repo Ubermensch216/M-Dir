@@ -99,6 +99,15 @@ public class CommandIntegrationTests(ITestOutputHelper output)
             }
 
             Assert.All(form.Toolbar!.Items.OfType<ToolStripButton>(), button => Assert.IsType<Command>(button.Tag));
+
+            // The default toolbar carries pictures only: no button shows a word (an icon-font glyph is one private-use character).
+            foreach (ToolStripItem item in form.Toolbar.Items.Cast<ToolStripItem>().Where(i => i is not ToolStripSeparator))
+            {
+                bool picture = item.Image is not null && item.DisplayStyle == ToolStripItemDisplayStyle.Image;
+                bool glyph = item.DisplayStyle == ToolStripItemDisplayStyle.Text && item.Text.Length == 1 && item.Text[0] >= '';
+                Assert.True(picture || glyph, $"toolbar item '{item.Text}' shows text instead of an icon");
+            }
+
             return Task.CompletedTask;
         });
     }

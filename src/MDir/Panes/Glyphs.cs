@@ -17,6 +17,15 @@ internal static class Glyphs
     public static readonly string Close = ((char)0xE711).ToString();
     public static readonly string Favorite = ((char)0xE734).ToString();
 
+    /// <summary>A window with a side panel on the left: the folder tree.</summary>
+    public static readonly string TreePane = ((char)0xE8A0).ToString();
+
+    /// <summary>A window with a side panel on the right: the preview.</summary>
+    public static readonly string PreviewPane = ((char)0xE89F).ToString();
+
+    /// <summary>Four tiles: the pane layouts.</summary>
+    public static readonly string Layouts = ((char)0xE8A9).ToString();
+
     public static Font Font { get; } = CreateFont();
 
     public static ToolStripButton CreateButton(string glyph, string toolTip, EventHandler onClick) =>

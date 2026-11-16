@@ -188,7 +188,7 @@ public class LocalizationWindowTests
                 Assert.Equal("Tabs", form.Commands.Get("tab.new").CategoryText);
                 Assert.Equal("New Tab", form.Commands.Get("tab.new").DisplayText);
                 Assert.Contains(form.Toolbar!.Items.OfType<ToolStripButton>(), button => button.ToolTipText?.StartsWith("New Tab") == true);
-                Assert.StartsWith("Layout", form.Toolbar.Items.OfType<ToolStripDropDownButton>().Single().Text);
+                Assert.Equal("Pane layout", form.Toolbar.Items.OfType<ToolStripDropDownButton>().Single().ToolTipText);
 
                 var fileMenu = (ToolStripMenuItem)form.MainMenuStrip.Items[0];
                 Assert.Contains(fileMenu.DropDownItems.OfType<ToolStripMenuItem>(), item => item.Text == "&New Workspace");

@@ -59,11 +59,19 @@ internal sealed class PreviewPane : Panel
     private readonly ToolStripTextBox _findBox = new() { AutoSize = false, Width = 150, ToolTipText = "찾을 글 (Enter: 다음, Shift+Enter: 이전)" };
     private readonly ToolStripButton _slideshowButton = new("슬라이드쇼") { CheckOnClick = true, ToolTipText = "몇 초마다 다음 그림을 보여 줍니다", DisplayStyle = ToolStripItemDisplayStyle.Text };
     private readonly Panel _content = new() { Dock = DockStyle.Fill };
+
+    /// <summary>The line between the title block and the preview.</summary>
+    private readonly Panel _headerLine = new() { Dock = DockStyle.Top, Height = 1 };
+    private Color _frameColor = SystemColors.ControlDark;
     private Control? _view;
     private int _version;
 
     public PreviewPane()
     {
+        // A 1 px outline is drawn in the padding, so the pane stands out from the file lists and the M-Finder panel beside it.
+        Padding = new Padding(1);
+        ApplyTheme();
+
         _title.Font = new Font(Font, FontStyle.Bold);
         var findPrevious = new ToolStripButton("▲", null, (_, _) => FindNext(_findBox.Text, forward: false)) { ToolTipText = "이전 찾기", DisplayStyle = ToolStripItemDisplayStyle.Text };
         var findNext = new ToolStripButton("▼", null, (_, _) => FindNext(_findBox.Text, forward: true)) { ToolTipText = "다음 찾기", DisplayStyle = ToolStripItemDisplayStyle.Text };
@@ -96,9 +104,67 @@ internal sealed class PreviewPane : Panel
         Controls.Add(_content);
         Controls.Add(_textBar);
         Controls.Add(_imageBar);
+        Controls.Add(_headerLine);
         Controls.Add(_detail);
         Controls.Add(_title);
         _content.BringToFront();
+    }
+
+    /// <summary>
+    /// Colours the frame and the title block from the window's current background and text colours, so they suit both
+    /// the light and the dark theme: the outline is a clear step towards the text colour, the title block a faint one.
+    /// </summary>
+    public void ApplyTheme()
+    {
+        _frameColor = Mix(BackColor, ForeColor, 0.30);
+        Color header = Mix(BackColor, ForeColor, 0.07);
+        _title.BackColor = _detail.BackColor = header;
+        _headerLine.BackColor = _frameColor;
+        Invalidate();
+    }
+
+    internal Color FrameColor => _frameColor;
+
+    private static Color Mix(Color from, Color to, double amount) => Color.FromArgb(
+        from.R + (int)((to.R - from.R) * amount),
+        from.G + (int)((to.G - from.G) * amount),
+        from.B + (int)((to.B - from.B) * amount));
+
+    protected override void OnPaint(PaintEventArgs e)
+    {
+        base.OnPaint(e);
+        using var pen = new Pen(_frameColor);
+        e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+    }
+
+    protected override void OnResize(EventArgs eventargs)
+    {
+        base.OnResize(eventargs);
+        Invalidate();
+    }
+
+    protected override void OnBackColorChanged(EventArgs e)
+    {
+        base.OnBackColorChanged(e);
+        ApplyTheme();
+    }
+
+    protected override void OnForeColorChanged(EventArgs e)
+    {
+        base.OnForeColorChanged(e);
+        ApplyTheme();
+    }
+
+    protected override void OnSystemColorsChanged(EventArgs e)
+    {
+        base.OnSystemColorsChanged(e);
+        ApplyTheme();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyTheme();
     }
 
     /// <summary>Raised with -1 or +1 when the user asks for the previous or next item (the window moves the selection).</summary>

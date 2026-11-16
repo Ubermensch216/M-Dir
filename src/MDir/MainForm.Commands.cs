@@ -145,7 +145,7 @@ internal sealed partial class MainForm
         }
 
         Add("view.refresh", "새로 고침(&R)", view, () => ActiveBrowser.RefreshView(), [Keys.F5], glyph: Glyphs.Refresh);
-        Add("view.tree", "폴더 트리 표시(&T)", view, ToggleTree, [Keys.F9], check: () => IsTreeShown);
+        Add("view.tree", "폴더 트리 표시(&T)", view, ToggleTree, [Keys.F9], check: () => IsTreeShown, glyph: Glyphs.TreePane);
         Add("view.treePaneMode", "패널별 트리(&P)", view, () => SetSharedTreeMode(false), check: () => !_sharedTreeMode);
         Add("view.treeSharedMode", "공용 트리(&S)", view, () => SetSharedTreeMode(true), check: () => _sharedTreeMode);
         AddTreeOption("lines", "연결선 표시", o => o.Lines, (o, v) => o.Lines = v);
@@ -164,7 +164,7 @@ internal sealed partial class MainForm
         Add("view.filter", "파일 필터(&I)", view, ToggleFilter, [Keys.Control | Keys.Shift | Keys.F], check: () => _activePane.FilterBarVisible, glyph: "");
         Add("view.colorFilter", "색상 필터 사용(&C)", view, () => SetColorFilterEnabled(!Settings.ColorFilterEnabled), check: () => Settings.ColorFilterEnabled);
         Add("view.editColorFilter", "색상 필터 편집(&E)...", view, EditColorFilter);
-        Add("view.preview", "미리보기 창(&P)", view, TogglePreview, [Keys.F12], check: () => _previewVisible);
+        Add("view.preview", "미리보기 창(&P)", view, TogglePreview, [Keys.F12], check: () => _previewVisible, glyph: Glyphs.PreviewPane);
         _commands.Add(new Command("view.finder", "M-Finder 검색 창(&M)", ToggleFinder)
         {
             Category = view,
@@ -441,7 +441,7 @@ internal sealed partial class MainForm
 
     private ToolStripDropDownButton CreateLayoutDropDown()
     {
-        var layouts = new ToolStripDropDownButton(Loc.T("레이아웃")) { DisplayStyle = ToolStripItemDisplayStyle.Text, ToolTipText = Loc.T("창 레이아웃") };
+        var layouts = new ToolStripDropDownButton(Glyphs.Layouts) { DisplayStyle = ToolStripItemDisplayStyle.Text, Font = Glyphs.Font, ToolTipText = Loc.T("창 레이아웃") };
         int iconSize = LogicalToDeviceUnits(16);
         foreach (PaneLayout paneLayout in PaneLayout.All)
         {
