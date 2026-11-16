@@ -16,8 +16,8 @@
   </PropertyGroup>
 
   <!-- dotnet publish -c Release -r win-x64 : a single M-Dir.exe (see publish.ps1).
-       Self-contained by default (about 49 MB, needs no installed .NET); -p:SelfContained=false gives the
-       framework-dependent exe (under 1 MB, needs the .NET 10 Desktop Runtime). Trimming is not offered:
+       Self-contained by default (about 47 MB, needs no installed .NET); -p:SelfContained=false gives the
+       framework-dependent exe (about 1.1 MB, needs the .NET 10 Desktop Runtime). Trimming is not offered:
        the SDK does not support it for Windows Forms (NETSDK1175) and the COM interop here relies on reflection. -->
   <PropertyGroup Condition="'$(RuntimeIdentifier)' != ''">
     <SelfContained Condition="'$(SelfContained)' == ''">true</SelfContained>

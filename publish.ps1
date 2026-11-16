@@ -5,8 +5,8 @@
 .DESCRIPTION
   Two variants of the same program, each as a plain folder and as a portable zip:
 
-    artifacts\M-Dir\M-Dir.exe       self-contained, about 49 MB, runs on any Windows 10/11 x64 without .NET
-    artifacts\M-Dir-lite\M-Dir.exe  framework-dependent, under 1 MB, needs the .NET 10 Desktop Runtime
+    artifacts\M-Dir\M-Dir.exe       self-contained, about 47 MB, runs on any Windows 10/11 x64 without .NET
+    artifacts\M-Dir-lite\M-Dir.exe  framework-dependent, about 1.1 MB, needs the .NET 10 Desktop Runtime
                                     (https://dotnet.microsoft.com/download/dotnet/10.0, "Desktop Runtime")
 
     artifacts\M-Dir-<version>-<rid>.zip       portable zip of the self-contained one
