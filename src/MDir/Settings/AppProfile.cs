@@ -51,7 +51,6 @@ internal sealed class AppSettings
     private const string RecentSection = "RecentFilters";
     private const string AppearanceSection = "Appearance";
     private const string ToolbarSection = "Toolbar";
-    private const string FinderSection = "Finder";
     private const int MaxRecentFilters = 20;
 
     /// <summary>Save the workspace on exit and restore it at the next start (Q-Dir's <c>start.qdr</c> behaviour).</summary>
@@ -100,10 +99,17 @@ internal sealed class AppSettings
     public List<string> ToolbarItems { get; } = [];
 
     /// <summary>
-    /// Where M-Finder is: its exe, or a source folder that holds <c>mfinder\__main__.py</c>. Empty = look in the usual
-    /// places (see <see cref="MDir.Finder.FinderLauncher"/>).
+    /// An external M-Finder to use instead of the built-in search: its exe, or a source folder that holds
+    /// <c>mfinder\__main__.py</c>. Empty = the built-in search.
     /// </summary>
-    public string FinderPath { get; set; } = string.Empty;
+    public string FinderPath
+    {
+        get => Finder.ExternalPath;
+        set => Finder.ExternalPath = value;
+    }
+
+    /// <summary>The built-in M-Finder search: what it indexes and how.</summary>
+    public FinderOptions Finder { get; set; } = new();
 
     /// <summary>File name filters typed before, newest first.</summary>
     public List<string> RecentFilters { get; } = [];
@@ -144,7 +150,7 @@ internal sealed class AppSettings
                 MinimizeToTray = ini.GetBool(StartSection, nameof(MinimizeToTray), false),
                 ColorMode = Enum.TryParse(ini.Get(AppearanceSection, nameof(ColorMode)), true, out AppColorMode mode) && Enum.IsDefined(mode) ? mode : AppColorMode.System,
                 UiScale = AppAppearance.NormalizeScale(ini.GetInt(AppearanceSection, nameof(UiScale), 100)),
-                FinderPath = ini.Get(FinderSection, "Path") ?? string.Empty,
+                Finder = FinderOptions.Read(ini),
             };
             if (ini.Get(ToolbarSection, "Items") is { Length: > 0 } toolbar)
                 settings.ToolbarItems.AddRange(toolbar.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
@@ -179,10 +185,7 @@ internal sealed class AppSettings
         ini.Set(AppearanceSection, nameof(ColorMode), ColorMode.ToString());
         ini.Set(AppearanceSection, nameof(Language), Language);
         ini.Set(AppearanceSection, nameof(UiScale), UiScale);
-        if (FinderPath.Length > 0)
-            ini.Set(FinderSection, "Path", FinderPath);
-        else
-            ini.RemoveSection(FinderSection);
+        Finder.Write(ini);
         if (ToolbarItems.Count > 0)
             ini.Set(ToolbarSection, "Items", string.Join(',', ToolbarItems));
         else

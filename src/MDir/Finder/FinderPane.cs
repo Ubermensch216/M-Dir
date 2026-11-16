@@ -27,7 +27,7 @@ internal sealed class FinderPane : Panel
     private readonly ToolStripButton _wholeWord = Toggle("ab", "단어 단위로 일치");
     private readonly ToolStripButton _matchPath = Toggle(@"\", "전체 경로에서 찾기");
     private readonly ToolStripButton _regex = Toggle(".*", "정규식");
-    private readonly ListView _list = new()
+    private readonly ListView _list = new BufferedListView()
     {
         Dock = DockStyle.Fill,
         View = View.Details,
@@ -62,6 +62,7 @@ internal sealed class FinderPane : Panel
     private bool _darkMode;
     private bool _fillingFilters;
     private int _lastSelected = -1;
+    private bool _remappingSelection;
 
     /// <param name="ensureRunning">Makes sure an M-Finder answers (starting one if needed); returns null, or why it could not.</param>
     public FinderPane(IFinderBackend backend, Func<Task<string?>> ensureRunning)
@@ -206,7 +207,7 @@ internal sealed class FinderPane : Panel
         _matchPath.ToolTipText = Loc.T("전체 경로에서 찾기");
         _regex.ToolTipText = Loc.T("정규식");
         _filter.ToolTipText = Loc.T("M-Finder 필터");
-        _locate.Text = Loc.T("M-Finder 위치 지정...");
+        _locate.Text = Loc.T("M-Finder 설정...");
         if (_filter.Items.Count > 0)
         {
             _fillingFilters = true;
@@ -435,8 +436,184 @@ internal sealed class FinderPane : Panel
         if (generation != _generation || IsDisposed)
             return;
 
-        ShowResults(query, page, keepView);
+        if (keepView && _query == query)
+        {
+            // Like Everything: keep showing the old rows until the new ones are in hand, then repaint only what differs.
+            Dictionary<int, FinderRow[]> others = await LoadLoadedPagesAsync(query, page);
+            if (generation != _generation || IsDisposed)
+                return;
+
+            RefreshResults(page, others);
+        }
+        else
+        {
+            ShowResults(query, page, keepView);
+        }
+
         ShowCount();
+    }
+
+    private const int MaxRefreshPages = 8;
+
+    /// <summary>The pages other than the first that the list has loaded (what is, or was, on screen), fetched again for a refresh.</summary>
+    private async Task<Dictionary<int, FinderRow[]>> LoadLoadedPagesAsync(FinderQuery query, FinderPage first)
+    {
+        int[] wanted = [.. _pages.Keys.Where(p => p > 0 && p * PageSize < first.Total).Order().Take(MaxRefreshPages)];
+        var result = new Dictionary<int, FinderRow[]>();
+        if (wanted.Length == 0)
+            return result;
+
+        async Task<(int Page, FinderRow[]? Rows)> Fetch(int p)
+        {
+            try
+            {
+                FinderPage loaded = await _backend.SearchAsync(query, p * PageSize, PageSize);
+                return (p, [.. loaded.Rows]);
+            }
+            catch (Exception ex) when (ex is FinderUnavailableException or FinderException)
+            {
+                return (p, null);
+            }
+        }
+
+        foreach ((int p, FinderRow[]? rows) in await Task.WhenAll(wanted.Select(Fetch)))
+        {
+            if (rows is not null)
+                result[p] = rows;
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Brings the list up to date with a refreshed result set of the same query without flicker: nothing is touched when
+    /// the visible rows are unchanged, otherwise only the rows that differ are repainted. The scroll position stays, and
+    /// the selection follows the selected files (not their positions).
+    /// </summary>
+    private void RefreshResults(FinderPage page, Dictionary<int, FinderRow[]> others)
+    {
+        _revision = page.Revision;
+        var fresh = new Dictionary<int, FinderRow[]>(others) { [0] = [.. page.Rows] };
+
+        // Which loaded rows differ from what the list shows?
+        int firstChange = int.MaxValue, lastChange = -1;
+        void Changed(int index)
+        {
+            firstChange = Math.Min(firstChange, index);
+            lastChange = Math.Max(lastChange, index);
+        }
+
+        foreach ((int p, FinderRow[] old) in _pages)
+        {
+            if (!fresh.TryGetValue(p, out FinderRow[]? now))
+            {
+                // Not fetched again: its rows can no longer be shown from the cache.
+                for (int k = 0; k < old.Length; k++)
+                    Changed(p * PageSize + k);
+                continue;
+            }
+
+            int common = Math.Min(old.Length, now.Length);
+            for (int k = 0; k < common; k++)
+            {
+                if (old[k] != now[k])
+                    Changed(p * PageSize + k);
+            }
+
+            for (int k = common; k < Math.Max(old.Length, now.Length); k++)
+                Changed(p * PageSize + k);
+        }
+
+        bool totalChanged = page.Total != _total;
+        if (!totalChanged && lastChange < 0)
+            return;
+
+        // The selected files, found again after the rows moved.
+        var selected = new List<(int Index, string? Path)>();
+        foreach (int index in _list.SelectedIndices)
+            selected.Add((index, LoadedRow(index)?.FullPath));
+
+        int top = _list.TopItem?.Index ?? 0;
+        _pages.Clear();
+        _pendingPages.Clear();
+        foreach ((int p, FinderRow[] rows) in fresh)
+            _pages[p] = rows;
+
+        if (totalChanged)
+        {
+            _total = page.Total;
+            _list.VirtualListSize = _total;
+            if (_total > 0 && top > 0 && _list.TopItem?.Index != Math.Min(top, _total - 1))
+                _list.TopItem = _list.Items[Math.Min(top, _total - 1)];
+        }
+
+        if (_total > 0 && lastChange >= 0)
+        {
+            int from = Math.Min(firstChange, _total - 1);
+            int to = totalChanged ? _total - 1 : Math.Min(lastChange, _total - 1);
+            _list.RedrawItems(from, to, invalidateOnly: true);
+        }
+
+        RemapSelection(selected);
+    }
+
+    private FinderRow? LoadedRow(int index)
+    {
+        if (index < 0 || index >= _total || !_pages.TryGetValue(index / PageSize, out FinderRow[]? rows))
+            return null;
+
+        return index % PageSize < rows.Length ? rows[index % PageSize] : null;
+    }
+
+    /// <summary>After a refresh moved rows around, selects the same files again (the preview must not reload for a file that only moved).</summary>
+    private void RemapSelection(List<(int Index, string? Path)> before)
+    {
+        if (before.Count == 0)
+            return;
+
+        bool intact = before.All(item => item.Path is null
+            ? item.Index < _total
+            : LoadedRow(item.Index) is { } row && string.Equals(row.FullPath, item.Path, StringComparison.OrdinalIgnoreCase));
+        if (intact)
+            return;
+
+        var where = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        foreach ((int p, FinderRow[] rows) in _pages)
+        {
+            for (int k = 0; k < rows.Length; k++)
+                where[rows[k].FullPath] = p * PageSize + k;
+        }
+
+        var after = new List<int>();
+        foreach ((int index, string? path) in before)
+        {
+            if (path is null)
+            {
+                if (index < _total)
+                    after.Add(index);
+            }
+            else if (where.TryGetValue(path, out int moved))
+            {
+                after.Add(moved);
+            }
+        }
+
+        _remappingSelection = true;
+        try
+        {
+            _list.SelectedIndices.Clear();
+            foreach (int index in after)
+                _list.SelectedIndices.Add(index);
+        }
+        finally
+        {
+            _remappingSelection = false;
+        }
+
+        // The same single file at its new place is not a new selection.
+        if (after.Count == 1 && _lastSelected >= 0)
+            _lastSelected = after[0];
+        OnSelectionChanged();
     }
 
     private void ShowResults(FinderQuery query, FinderPage page, bool keepView)
@@ -555,6 +732,9 @@ internal sealed class FinderPane : Panel
 
     private void OnSelectionChanged()
     {
+        if (_remappingSelection)
+            return;
+
         int selected = _list.SelectedIndices.Count == 1 ? _list.SelectedIndices[0] : -1;
         if (selected == _lastSelected)
             return;
@@ -741,6 +921,12 @@ internal sealed class FinderPane : Panel
         {
             Marshal.FreeHGlobal(text);
         }
+    }
+
+    /// <summary>A list drawn off screen and in one piece, so repainting it never shows blank or half-drawn rows.</summary>
+    private sealed class BufferedListView : ListView
+    {
+        public BufferedListView() => DoubleBuffered = true;
     }
 
     protected override void Dispose(bool disposing)

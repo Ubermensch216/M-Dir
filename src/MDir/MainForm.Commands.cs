@@ -172,7 +172,7 @@ internal sealed partial class MainForm
             IsChecked = () => _finderVisible,
             Image = FinderIcon(),
         });
-        Add("tools.finderLocation", "M-Finder 위치 지정(&M)...", tools, LocateFinder);
+        Add("tools.finderLocation", "M-Finder 설정(&M)...", tools, LocateFinder);
         Add("view.sortHighlight", "정렬 열 강조(&H)", view, () => SetSortHighlight(!Settings.SortColumnHighlight), check: () => Settings.SortColumnHighlight);
 
         // Go

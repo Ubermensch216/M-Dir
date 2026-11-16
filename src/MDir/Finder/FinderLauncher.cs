@@ -3,7 +3,16 @@ using System.Diagnostics;
 namespace MDir.Finder;
 
 /// <summary>How to start M-Finder: an exe, or Python running the source package.</summary>
-internal sealed record FinderProgram(string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory);
+internal sealed record FinderProgram(string FileName, IReadOnlyList<string> Arguments, string WorkingDirectory)
+{
+    /// <summary>
+    /// Arguments to try when <see cref="Arguments"/> makes the program exit right away: an older M-Finder that does not
+    /// know <c>--headless</c> is started hidden in its tray instead (<c>gui --minimized</c>).
+    /// </summary>
+    public IReadOnlyList<string>? FallbackArguments { get; init; }
+
+    public FinderProgram WithFallbackArguments() => this with { Arguments = FallbackArguments ?? Arguments, FallbackArguments = null };
+}
 
 /// <summary>
 /// Finds M-Finder and starts it without a window (<c>gui --headless</c>): it then only keeps the index up to date and
@@ -12,6 +21,10 @@ internal sealed record FinderProgram(string FileName, IReadOnlyList<string> Argu
 internal static class FinderLauncher
 {
     private static readonly string[] ExeNames = ["M-Finder.exe", "MFinder.exe"];
+    private static readonly string[] MinimizedArguments = ["gui", "--minimized"];
+
+    // The source package is called mfinder in newer copies, filefinder in older ones.
+    private static readonly string[] SourcePackages = ["mfinder", "filefinder"];
 
     /// <summary>
     /// The program to start for <paramref name="configured"/> (an exe, or a folder holding the exe or the
@@ -43,9 +56,9 @@ internal static class FinderLauncher
             if (File.Exists(path))
             {
                 if (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase))
-                    return new FinderProgram(path, ["gui", "--headless"], Path.GetDirectoryName(path) ?? string.Empty);
+                    return new FinderProgram(path, ["gui", "--headless"], Path.GetDirectoryName(path) ?? string.Empty) { FallbackArguments = MinimizedArguments };
 
-                // mfinder\__main__.py (or any file of the package) picked in the dialog: use the source folder above it.
+                // <package>\__main__.py (or any file of the package) picked in the dialog: use the source folder above it.
                 string? folder = Path.GetDirectoryName(Path.GetDirectoryName(path));
                 return folder is null ? null : FromSource(folder);
             }
@@ -57,7 +70,7 @@ internal static class FinderLauncher
             {
                 string exe = Path.Combine(path, name);
                 if (File.Exists(exe))
-                    return new FinderProgram(exe, ["gui", "--headless"], path);
+                    return new FinderProgram(exe, ["gui", "--headless"], path) { FallbackArguments = MinimizedArguments };
             }
 
             return FromSource(path);
@@ -70,12 +83,15 @@ internal static class FinderLauncher
 
     private static FinderProgram? FromSource(string folder)
     {
-        if (!File.Exists(Path.Combine(folder, "mfinder", "__main__.py")))
+        string? package = SourcePackages.FirstOrDefault(name => File.Exists(Path.Combine(folder, name, "__main__.py")));
+        if (package is null)
             return null;
 
         // pythonw has no console window; the "py" launcher's windowless twin is pyw.
         string? python = FindOnPath("pythonw.exe") ?? FindOnPath("pyw.exe");
-        return python is null ? null : new FinderProgram(python, ["-m", "mfinder", "gui", "--headless"], folder);
+        return python is null
+            ? null
+            : new FinderProgram(python, ["-m", package, "gui", "--headless"], folder) { FallbackArguments = ["-m", package, .. MinimizedArguments] };
     }
 
     private static string? FindOnPath(string exe)

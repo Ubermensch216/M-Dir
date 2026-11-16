@@ -327,6 +327,7 @@ internal sealed partial class MainForm : Form, IMessageFilter
             _previewTimer.Dispose();
             _slideshowTimer.Dispose();
             _finderClient?.Dispose();
+            _finderEngine?.Dispose();
             _folderSizeColumn?.Dispose();
             _stateTimer.Dispose();
             if (_tray is not null)

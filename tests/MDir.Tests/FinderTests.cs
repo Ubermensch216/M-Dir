@@ -150,6 +150,8 @@ public class FinderTests(ITestOutputHelper output)
         FinderProgram program = FinderLauncher.FromPath(dir.Path)!;
         Assert.Equal(dir.File("M-Finder.exe"), program.FileName);
         Assert.Equal(["gui", "--headless"], program.Arguments);
+        // An older M-Finder without --headless is started hidden in its tray instead.
+        Assert.Equal(["gui", "--minimized"], program.WithFallbackArguments().Arguments);
         Assert.Equal(program.FileName, FinderLauncher.Locate(dir.File("M-Finder.exe"))!.FileName);
     }
 
@@ -167,6 +169,82 @@ public class FinderTests(ITestOutputHelper output)
 
         int layouts = ToolbarLayout.Default.ToList().IndexOf(ToolbarLayout.Layouts);
         Assert.Equal("view.finder", ToolbarLayout.Default[layouts + 1]);
+    }
+
+    /// <summary>Answers every search with the current <see cref="Names"/> in order; changing them bumps the revision, like new files appearing.</summary>
+    private sealed class ChangingBackend : IFinderBackend
+    {
+        public List<string> Names { get; } = [];
+
+        public long Revision { get; private set; } = 1;
+
+        public int Searches { get; private set; }
+
+        public void Set(params string[] names)
+        {
+            Names.Clear();
+            Names.AddRange(names);
+            Revision++;
+        }
+
+        public Task<FinderStatus> StatusAsync() => Task.FromResult(new FinderStatus(true, false, Names.Count, "ready", Revision));
+
+        public Task<FinderPage> SearchAsync(FinderQuery query, int offset, int count)
+        {
+            Searches++;
+            FinderRow[] rows = [.. Names.Select(n => new FinderRow(n, @"C:\data", false, 1, new DateTime(2024, 1, 1)))];
+            return Task.FromResult(new FinderPage(rows.Length, Revision, [.. rows.Skip(offset).Take(count)]));
+        }
+
+        public Task<IReadOnlyList<string>> FiltersAsync() => Task.FromResult<IReadOnlyList<string>>([]);
+
+        public Task QuitAsync() => Task.CompletedTask;
+    }
+
+    [Fact]
+    public void FinderPanel_RefreshKeepsTheSelectedFile_AndDoesNotReselectItWhenRowsMove()
+    {
+        using var dir = new TempDirectory();
+        var backend = new ChangingBackend();
+        backend.Set("a.txt", "b.txt", "c.txt", "d.txt", "e.txt");
+        Run(() => new MainForm(null, Workspace.CreateDefault(ShellLocation.Parse(dir.Path)!), null, null)
+        {
+            Size = new Size(1500, 800),
+            FinderBackendOverride = backend,
+        }, async form =>
+        {
+            form.ToggleFinder();
+            FinderPane finder = form.FinderPane!;
+            await WaitUntil(() => finder.Total == 5, "the list is filled");
+
+            // The list is drawn in one piece, so a refresh never shows blank rows.
+            Assert.True((bool)typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!.GetValue(finder.List)!);
+
+            finder.List.SelectedIndices.Add(2);
+            await WaitUntil(() => finder.SelectedRow?.Name == "c.txt", "c.txt is selected");
+            int selections = 0;
+            finder.SelectionChanged += (_, _) => selections++;
+
+            // Two files appear before it: the list refreshes in place and c.txt stays selected at its new place.
+            backend.Set("0.txt", "00.txt", "a.txt", "b.txt", "c.txt", "d.txt", "e.txt");
+            await WaitUntil(() => finder.Total == 7, "the refresh brought the new files");
+            Assert.Equal([4], finder.List.SelectedIndices.Cast<int>().ToArray());
+            Assert.Equal("c.txt", finder.SelectedRow!.Name);
+            Assert.Equal(0, selections);
+
+            // The same results again (only the revision moved): nothing changes.
+            int before = backend.Searches;
+            backend.Set("0.txt", "00.txt", "a.txt", "b.txt", "c.txt", "d.txt", "e.txt");
+            await WaitUntil(() => backend.Searches > before, "the refresh ran");
+            Assert.Equal(7, finder.Total);
+            Assert.Equal([4], finder.List.SelectedIndices.Cast<int>().ToArray());
+            Assert.Equal(0, selections);
+
+            // The selected file vanishes: the selection is gone.
+            backend.Set("0.txt", "00.txt", "a.txt", "b.txt", "d.txt", "e.txt");
+            await WaitUntil(() => finder.Total == 6, "the file vanished from the list");
+            Assert.Empty(finder.List.SelectedIndices);
+        });
     }
 
     /// <summary>Answers searches from a fixed list of files: every row whose name contains the text.</summary>
@@ -267,6 +345,50 @@ public class FinderTests(ITestOutputHelper output)
             await Task.Delay(200);
             AssertSideBySide(form);
         });
+    }
+
+    [Fact]
+    public void FinderPanel_WithoutAnExternalM_Finder_SearchesThroughTheBuiltInEngine()
+    {
+        using var dir = new TempDirectory();
+        using var data = new TempDirectory();
+        File.WriteAllText(dir.File("alpha.txt"), "needle in alpha");
+        File.WriteAllText(dir.File("beta.txt"), "plain beta");
+        Directory.CreateDirectory(dir.File("sub"));
+        File.WriteAllText(Path.Combine(dir.File("sub"), "gamma.txt"), "gamma");
+
+        var settings = new AppSettings();
+        settings.Finder.Roots = [dir.Path];
+        settings.Finder.UseMft = false;
+        settings.Finder.Monitor = false;
+        var profile = new AppProfile(AppPaths.Resolve(appDirectory: data.Path, roamingAppData: data.File("roaming")), settings);
+
+        Run(() => new MainForm(null, Workspace.CreateDefault(ShellLocation.Parse(dir.Path)!), null, profile)
+        {
+            Size = new Size(1500, 800),
+        }, async form =>
+        {
+            form.ToggleFinder();
+            FinderPane finder = form.FinderPane!;
+            // The folder and its two sub-entries: sub, alpha.txt, beta.txt, gamma.txt.
+            await WaitUntil(() => finder.Total == 4, "the built-in engine indexed the folder");
+            Assert.True(finder.IsConnected);
+
+            finder.SearchBox.Text = "gam";
+            await WaitUntil(() => finder.Total == 1, "the search narrowed the list");
+            Assert.Equal("gamma.txt", finder.List.Items[0].Text);
+
+            finder.SearchBox.Text = "content:needle";
+            await WaitUntil(() => finder.Total == 1 && finder.List.Items[0].Text == "alpha.txt", "a content search found the file");
+
+            finder.SearchBox.Text = "size:oops";
+            await WaitUntil(() => finder.StatusText.Contains("size", StringComparison.OrdinalIgnoreCase), "a bad search is reported in the status line");
+
+            // The index is saved for the next start.
+            form.ToggleFinder();
+        });
+
+        Assert.True(File.Exists(Path.Combine(data.File("roaming"), "M-Dir", "Finder", "index.mfi")), "the engine saved its index in the profile folder");
     }
 
     [Fact]

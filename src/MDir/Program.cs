@@ -14,6 +14,13 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // The elevated copy that reads NTFS volumes for the built-in M-Finder (see FinderVolumeHelper): no window.
+        if (MDir.Finder.Engine.FinderVolumeHelper.IsHelperCommandLine(args))
+        {
+            Environment.ExitCode = MDir.Finder.Engine.FinderVolumeHelper.RunServer(args);
+            return;
+        }
+
         AppProfile profile = AppProfile.Load();
         StartupArguments startup = StartupArguments.Parse(args);
 

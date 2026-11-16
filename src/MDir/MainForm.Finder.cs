@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Diagnostics;
 using MDir.Finder;
+using MDir.Finder.Engine;
 using MDir.Layout;
 using MDir.Localization;
 using MDir.Panes;
@@ -15,6 +16,7 @@ internal sealed partial class MainForm
     private readonly Splitter _finderSplitter = new() { Dock = DockStyle.Right, Width = 5, MinSize = 200, MinExtra = 300, Visible = false };
     private FinderPane? _finderPane;
     private FinderClient? _finderClient;
+    private FinderEngine? _finderEngine;
     private bool _finderVisible;
     private int _finderSplit = Workspace.DefaultFinderSplit;
     private bool _applyingFinderWidth;
@@ -77,8 +79,31 @@ internal sealed partial class MainForm
 
     private void CreateFinderPane()
     {
-        IFinderBackend backend = FinderBackendOverride ?? (_finderClient ??= new FinderClient());
-        Func<Task<string?>> ensureRunning = FinderBackendOverride is null ? EnsureFinderRunningAsync : () => Task.FromResult<string?>(null);
+        IFinderBackend backend;
+        Func<Task<string?>> ensureRunning;
+        if (FinderBackendOverride is not null)
+        {
+            backend = FinderBackendOverride;
+            ensureRunning = () => Task.FromResult<string?>(null);
+        }
+        else if (Settings.Finder.UsesExternal)
+        {
+            // An external M-Finder the user chose: talk to it over its pipe.
+            backend = _finderClient ??= new FinderClient();
+            ensureRunning = EnsureFinderRunningAsync;
+        }
+        else
+        {
+            // The search built into M-Dir.
+            FinderEngine engine = _finderEngine ??= CreateFinderEngine();
+            backend = engine;
+            ensureRunning = () =>
+            {
+                engine.Start();
+                return Task.FromResult<string?>(null);
+            };
+        }
+
         var pane = new FinderPane(backend, ensureRunning) { Dock = DockStyle.Right, Width = 300, DarkMode = IsDarkMode };
         pane.SelectionChanged += (_, row) => PreviewFinderRow(row, openPreview: false);
         pane.PreviewRequested += (_, row) => PreviewFinderRow(row, openPreview: true);
@@ -88,6 +113,41 @@ internal sealed partial class MainForm
 
         _workArea.Controls.Add(pane);
         _finderPane = pane;
+    }
+
+    private string FinderDatabaseFile() =>
+        Settings.Finder.DatabasePath.Length > 0
+            ? Settings.Finder.DatabasePath
+            : FinderEngine.DefaultDatabaseFile(_profile?.Paths.DataDirectory ?? Path.Combine(Path.GetTempPath(), "M-Dir"));
+
+    private FinderEngine CreateFinderEngine() => new(Settings.Finder, FinderDatabaseFile(), AskFinderElevation);
+
+    /// <summary>
+    /// Asks (once, from the engine's background thread) whether the built-in search may start the elevated helper that
+    /// reads NTFS drives through their MFT, and remembers the answer.
+    /// </summary>
+    private bool AskFinderElevation()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return false;
+
+        bool allow = false;
+        try
+        {
+            Invoke(() =>
+            {
+                string text = Loc.T("NTFS 드라이브를 빠르게 색인하려면 관리자 권한이 필요합니다.\n\n허용하면 Windows가 권한 확인 창(UAC)을 한 번 표시하고, 관리자 권한으로 실행되는 M-Dir 도우미가 파일 이름·크기·날짜만 읽어 M-Dir에 전달합니다. 허용하지 않으면 폴더를 직접 훑어 색인하므로 처음 색인이 더 오래 걸립니다.\n\n허용할까요? (M-Finder 설정에서 바꿀 수 있습니다.)");
+                allow = MessageBox.Show(this, text, "M-Finder", MessageBoxButtons.YesNo, MessageBoxIcon.Question) == DialogResult.Yes;
+                Settings.Finder.MftConsent = allow ? FinderMftConsent.Allow : FinderMftConsent.Deny;
+                SaveSettings();
+            });
+        }
+        catch (Exception ex) when (ex is InvalidOperationException or ObjectDisposedException)
+        {
+            return false;
+        }
+
+        return allow;
     }
 
     /// <summary>
@@ -165,44 +225,50 @@ internal sealed partial class MainForm
         if (await client.PingAsync())
             return null;
 
-        if (FinderLauncher.Locate(Settings.FinderPath) is not { } program)
-        {
-            return Settings.FinderPath.Length > 0
-                ? Loc.F("'{0}'에서 M-Finder를 찾을 수 없습니다.", Settings.FinderPath)
-                : Loc.T("M-Finder를 찾을 수 없습니다. 위치를 지정하세요.");
-        }
+        if (FinderLauncher.Locate(Settings.Finder.ExternalPath) is not { } program)
+            return Loc.F("'{0}'에서 M-Finder를 찾을 수 없습니다.", Settings.Finder.ExternalPath);
 
-        Process? process;
-        try
+        // Newer M-Finders start without a window (--headless); one that does not know the option exits right away
+        // (argument error), so it is started again hidden in its tray instead.
+        for (bool fallback = false; ; fallback = true)
         {
-            process = FinderLauncher.Start(program);
-        }
-        catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException)
-        {
-            return Loc.F("M-Finder를 시작하지 못했습니다: {0}", ex.Message);
-        }
-
-        using (process)
-        {
-            _finderStartedHere = true;
-            // Loading the saved index takes a moment; building one for the first time takes longer, but the pipe
-            // answers before that (the panel then shows the indexing progress).
-            DateTime deadline = DateTime.UtcNow.AddSeconds(30);
-            while (DateTime.UtcNow < deadline)
+            FinderProgram attempt = fallback ? program.WithFallbackArguments() : program;
+            Process? process;
+            try
             {
-                await Task.Delay(300);
-                if (await client.PingAsync())
-                    return null;
+                process = FinderLauncher.Start(attempt);
+            }
+            catch (Exception ex) when (ex is Win32Exception or IOException or InvalidOperationException)
+            {
+                return Loc.F("M-Finder를 시작하지 못했습니다: {0}", ex.Message);
+            }
 
-                if (process is { HasExited: true } && !await client.PingAsync())
+            using (process)
+            {
+                _finderStartedHere = true;
+                // Loading the saved index takes a moment; building one for the first time takes longer, but the pipe
+                // answers before that (the panel then shows the indexing progress).
+                DateTime deadline = DateTime.UtcNow.AddSeconds(30);
+                while (DateTime.UtcNow < deadline)
                 {
-                    _finderStartedHere = false;
-                    return Loc.F("M-Finder가 바로 끝났습니다 (종료 코드 {0}). --headless를 지원하는 M-Finder인지 확인하세요.", process.ExitCode);
+                    await Task.Delay(300);
+                    if (await client.PingAsync())
+                        return null;
+
+                    if (process is { HasExited: true } && !await client.PingAsync())
+                    {
+                        _finderStartedHere = false;
+                        if (!fallback && program.FallbackArguments is not null)
+                            break;
+
+                        return Loc.F("M-Finder가 바로 끝났습니다 (종료 코드 {0}). 지정한 M-Finder가 실행되는지 확인하세요.", process.ExitCode);
+                    }
                 }
+
+                if (!(process is { HasExited: true }))
+                    return Loc.T("M-Finder가 응답하지 않습니다.");
             }
         }
-
-        return Loc.T("M-Finder가 응답하지 않습니다.");
     }
 
     /// <summary>Ends the M-Finder this window started (one the user started themself keeps running).</summary>
@@ -222,43 +288,50 @@ internal sealed partial class MainForm
         }
     }
 
-    /// <summary>Lets the user pick M-Finder.exe (or mfinder\__main__.py of a source copy) and connects to it.</summary>
+    /// <summary>Opens the M-Finder settings (what to index, exclusions, an optional external M-Finder) and applies them.</summary>
     private void LocateFinder()
     {
-        using var dialog = new OpenFileDialog
-        {
-            Title = Loc.T("M-Finder 위치 지정"),
-            Filter = Loc.T("M-Finder (M-Finder.exe, __main__.py)|M-Finder.exe;MFinder.exe;__main__.py|프로그램 (*.exe)|*.exe|모든 파일 (*.*)|*.*"),
-            CheckFileExists = true,
-        };
-        if (Settings.FinderPath.Length > 0)
-        {
-            try
-            {
-                dialog.InitialDirectory = Directory.Exists(Settings.FinderPath) ? Settings.FinderPath : Path.GetDirectoryName(Settings.FinderPath) ?? string.Empty;
-            }
-            catch (ArgumentException)
-            {
-            }
-        }
-
-        if (dialog.ShowDialog(this) != DialogResult.OK)
+        FinderOptions edited = Settings.Finder.Clone();
+        using var dialog = new FinderOptionsDialog(edited);
+        if (ShowLocalized(dialog) != DialogResult.OK)
             return;
 
-        if (FinderLauncher.FromPath(dialog.FileName) is null)
+        if (edited.UsesExternal && FinderLauncher.FromPath(edited.ExternalPath) is null)
         {
             ReportError(Loc.T("M-Finder.exe나 M-Finder 소스의 mfinder\\__main__.py를 고르세요. 소스는 pythonw.exe가 PATH에 있어야 실행됩니다."));
             return;
         }
 
-        Settings.FinderPath = dialog.FileName;
+        string database = FinderDatabaseFile();
+        Settings.Finder = edited;
         SaveSettings();
+
+        // The panel and the engine are made again with the new options.
         if (_finderPane is not null)
-            _finderPane.Reset();
+        {
+            _workArea.Controls.Remove(_finderPane);
+            _finderPane.Dispose();
+            _finderPane = null;
+        }
+
+        _finderEngine?.Dispose();
+        _finderEngine = null;
+        if (dialog.RebuildRequested)
+        {
+            try
+            {
+                File.Delete(database);
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                // The index is then simply reused, or rebuilt when its options differ.
+            }
+        }
+
         if (!_finderVisible)
             ToggleFinder();
         else
-            _ = _finderPane?.ActivateAsync();
+            UpdateFinder();
     }
 
     private static Image? FinderIcon()

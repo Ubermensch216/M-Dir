@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Globalization;
 using MDir.Localization;
+using MDir.Features.Hwp;
 using MDir.Shell;
 
 namespace MDir.Features;
@@ -28,6 +29,9 @@ internal enum PreviewKind
 
     /// <summary>The media player (video and audio files).</summary>
     Media,
+
+    /// <summary>The built-in Hancom (.hwp/.hwpx) document viewer.</summary>
+    Document,
 }
 
 /// <summary>
@@ -257,12 +261,22 @@ internal sealed class PreviewPane : Panel
             return;
         }
 
-        if (HwpText.IsHwpPath(path))
+        // Hancom documents are drawn by the built-in reader (every page, with fonts, tables and pictures), as M-Finder
+        // does: Hancom's own preview handler paints the first page only. Files the reader cannot open (DRM,
+        // password) fall through to that handler.
+        if (HwpDocument.IsHwpPath(path))
         {
-            if (!await ShowHwpAsync(name, type, size, path, version) && version == _version)
-                ShowInfo(name, type, FileFacts(file, type), Loc.T("이 형식은 미리 볼 수 없습니다."));
+            HwpPreview? hwp = await LoadOrNull(() => HwpDocument.Preview(path));
+            if (version != _version)
+                return;
 
-            return;
+            if (hwp is not null)
+            {
+                SetView(new HwpView(hwp) { Dock = DockStyle.Fill }, PreviewKind.Document);
+                string sheets = hwp.Sheets > 1 ? Loc.F("{0}쪽 구획 · ", hwp.Sheets) : string.Empty;
+                SetHeader(name, $"{type} · {size} · {sheets}내장 한글 뷰어{(hwp.Truncated ? " · 앞부분만 표시" : string.Empty)}");
+                return;
+            }
         }
 
         if (MediaView.IsMedia(path))
@@ -311,75 +325,6 @@ internal sealed class PreviewPane : Panel
 
         if (version == _version)
             ShowInfo(name, type, FileFacts(file, type), Loc.T("이 형식은 미리 볼 수 없습니다."));
-    }
-
-    /// <summary>
-    /// Hancom documents. Hancom's preview handler paints only the first page, so: a PDF converted before shows every
-    /// page at once; otherwise the handler's (formatted) first page shows right away while Hancom Office converts the
-    /// document to PDF, which then replaces it. Without Hancom Office the first page stays; without the handler too,
-    /// the body text is shown. Returns false when nothing could be shown (true also when a newer selection took over).
-    /// </summary>
-    private async Task<bool> ShowHwpAsync(string name, string type, string size, string path, int version)
-    {
-        if (HwpPdfConverter.FindCached(path) is { } cached && ShowHwpPdf(name, type, size, cached))
-            return true;
-
-        string? firstPage = null;
-        if (PreviewHandlerHost.HasHandler(path))
-        {
-            var host = new PreviewHandlerHost { Dock = DockStyle.Fill };
-            SetView(host, PreviewKind.Handler);
-            if (host.TryShow(path))
-                firstPage = host.HandlerName ?? "미리보기 처리기";
-            else
-                SetView(null, PreviewKind.None);
-        }
-
-        if (HwpPdfConverter.IsAvailable)
-        {
-            if (firstPage is null)
-                ShowMessage(Loc.T("모든 쪽을 보여 주려고 한글에서 변환하는 중입니다…"));
-
-            SetHeader(name, $"{type} · {size} · {(firstPage is null ? string.Empty : "첫 쪽 · ")}모든 쪽을 보여 주려고 한글에서 변환하는 중…");
-            string? pdf = await HwpPdfConverter.ConvertAsync(path);
-            if (version != _version)
-                return true;
-
-            if (pdf is not null && ShowHwpPdf(name, type, size, pdf))
-                return true;
-        }
-
-        if (firstPage is not null)
-        {
-            SetHeader(name, $"{type} · {size} · {firstPage} (첫 쪽만)");
-            return true;
-        }
-
-        // No way to draw the pages: at least the text of all of them.
-        TextPreviewData? text = await LoadOrNull(() => HwpText.Read(path));
-        if (version != _version)
-            return true;
-
-        if (text is null)
-            return false;
-
-        ShowText(name, type, size, text);
-        return true;
-    }
-
-    /// <summary>Shows the PDF Hancom made of a document (every page, with its formatting) with the PDF preview handler.</summary>
-    private bool ShowHwpPdf(string name, string type, string size, string pdf)
-    {
-        var host = new PreviewHandlerHost { Dock = DockStyle.Fill };
-        SetView(host, PreviewKind.Handler);
-        if (!host.TryShow(pdf))
-        {
-            SetView(null, PreviewKind.None);
-            return false;
-        }
-
-        SetHeader(name, $"{type} · {size} · 모든 쪽 (한글에서 PDF로 변환해 {host.HandlerName ?? "PDF 처리기"}로 표시)");
-        return true;
     }
 
     private async Task ShowFolderAsync(ShellLocation item, string path, int version)
