@@ -473,7 +473,7 @@ public class HwpDocumentTests
         Run(() =>
         {
             var form = new Form { Width = 500, Height = 600, StartPosition = FormStartPosition.CenterScreen, Text = "M-Dir hwp preview" };
-            pane = new PreviewPane { Dock = DockStyle.Fill };
+            pane = new PreviewPane { Dock = DockStyle.Fill, UseRhwp = false };
             form.Controls.Add(pane);
             return form;
         }, async _ =>

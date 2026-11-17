@@ -28,6 +28,17 @@ $ErrorActionPreference = 'Stop'
 $project = Join-Path $PSScriptRoot 'src\MDir\MDir.csproj'
 $version = ([xml](Get-Content $project)).Project.PropertyGroup.Version | Where-Object { $_ } | Select-Object -First 1
 
+function Find-RhwpPreview {
+    $candidates = @(
+        (Join-Path $PSScriptRoot 'vendor\rhwp\rhwp-preview.exe'),
+        (Join-Path $PSScriptRoot 'vendor\rhwp\rhwp.exe'),
+        (Join-Path $PSScriptRoot 'packaging\rhwp_preview\target\x86_64-pc-windows-gnu\release\rhwp-preview.exe'),
+        (Join-Path $PSScriptRoot 'packaging\rhwp_preview\target\x86_64-pc-windows-gnullvm\release\rhwp-preview.exe'),
+        (Join-Path $PSScriptRoot 'packaging\rhwp_preview\target\release\rhwp-preview.exe')
+    )
+    return $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+}
+
 function Publish-Variant([string]$Name, [bool]$SelfContained, [string]$ZipSuffix) {
     $publishDir = Join-Path $Output $Name
     if (Test-Path $publishDir) { Remove-Item $publishDir -Recurse -Force }
@@ -35,12 +46,24 @@ function Publish-Variant([string]$Name, [bool]$SelfContained, [string]$ZipSuffix
     dotnet publish $project -c Release -r $Runtime "-p:SelfContained=$($SelfContained.ToString().ToLower())" -o $publishDir
     if ($LASTEXITCODE -ne 0) { throw "dotnet publish ($Name) failed ($LASTEXITCODE)" }
 
+    $rhwpExe = Find-RhwpPreview
+    if ($rhwpExe) {
+        $pubRhwp = Join-Path $publishDir 'rhwp'
+        New-Item -ItemType Directory $pubRhwp -Force | Out-Null
+        Copy-Item $rhwpExe (Join-Path $pubRhwp 'rhwp-preview.exe')
+    }
+
     # Portable package: a staging folder so the plain exe above stays free of the marker file.
     $staging = Join-Path $Output "portable-$Name"
     if (Test-Path $staging) { Remove-Item $staging -Recurse -Force }
     New-Item -ItemType Directory $staging | Out-Null
     New-Item -ItemType Directory (Join-Path $staging 'Lang') | Out-Null
     Copy-Item (Join-Path $publishDir 'M-Dir.exe') $staging
+    if ($rhwpExe) {
+        $stageRhwp = Join-Path $staging 'rhwp'
+        New-Item -ItemType Directory $stageRhwp -Force | Out-Null
+        Copy-Item $rhwpExe (Join-Path $stageRhwp 'rhwp-preview.exe')
+    }
     Set-Content -Path (Join-Path $staging 'M-Dir.ini') -Value "[Start]`r`n" -Encoding Unicode
     Set-Content -Path (Join-Path $staging 'Lang\README.txt') -Encoding UTF8 -Value @'
 Language packs

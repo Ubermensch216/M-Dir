@@ -55,6 +55,8 @@ internal sealed class PreviewPane : Panel
     private readonly Label _detail = new() { Dock = DockStyle.Top, AutoSize = false, Height = 20, Padding = new Padding(6, 0, 6, 0), AutoEllipsis = true, ForeColor = SystemColors.GrayText };
     private readonly ToolStrip _imageBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
     private readonly ToolStrip _textBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
+    private readonly ToolStrip _documentBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
+    private readonly ToolStripLabel _pageLabel = new() { AutoSize = true };
     private readonly ToolStripButton _wrapButton = new("줄 바꿈") { CheckOnClick = true, ToolTipText = "긴 줄을 창 너비에서 줄 바꿈", DisplayStyle = ToolStripItemDisplayStyle.Text };
     private readonly ToolStripTextBox _findBox = new() { AutoSize = false, Width = 150, ToolTipText = "찾을 글 (Enter: 다음, Shift+Enter: 이전)" };
     private readonly ToolStripButton _slideshowButton = new("슬라이드쇼") { CheckOnClick = true, ToolTipText = "몇 초마다 다음 그림을 보여 줍니다", DisplayStyle = ToolStripItemDisplayStyle.Text };
@@ -64,6 +66,7 @@ internal sealed class PreviewPane : Panel
     private readonly Panel _headerLine = new() { Dock = DockStyle.Top, Height = 1 };
     private Color _frameColor = SystemColors.ControlDark;
     private Control? _view;
+    private RhwpJob? _rhwpJob;
     private int _version;
 
     public PreviewPane()
@@ -100,8 +103,21 @@ internal sealed class PreviewPane : Panel
             CreateButton("↷", "오른쪽으로 회전", (view) => view.Rotate(clockwise: true)),
         ]);
 
-        // Z-order: fill last, so the bars dock first (top to bottom: title, detail, image bar, text bar).
+        _documentBar.Items.AddRange(
+        [
+            CreateDocumentButton("◀", "이전 쪽 (PageUp)", view => view.StepPage(-1)),
+            _pageLabel,
+            CreateDocumentButton("▶", "다음 쪽 (PageDown)", view => view.StepPage(1)),
+            new ToolStripSeparator(),
+            CreateDocumentButton("맞춤", "창 너비에 맞춤", view => view.FitToWindow()),
+            CreateDocumentButton("100%", "실제 크기", view => view.ActualSize()),
+            CreateDocumentButton("＋", "확대 (Ctrl+마우스 휠)", view => view.ZoomBy(1.25)),
+            CreateDocumentButton("－", "축소 (Ctrl+마우스 휠)", view => view.ZoomBy(0.8)),
+        ]);
+
+        // Z-order: fill last, so the bars dock first (top to bottom: title, detail, image bar, text bar, document bar).
         Controls.Add(_content);
+        Controls.Add(_documentBar);
         Controls.Add(_textBar);
         Controls.Add(_imageBar);
         Controls.Add(_headerLine);
@@ -229,6 +245,14 @@ internal sealed class PreviewPane : Panel
 
     public PreviewKind Kind { get; private set; }
 
+    /// <summary>Use <c>rhwp-preview.exe</c> when available; tests may set false to exercise the HTML fallback.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool UseRhwp { get; set; } = true;
+
+    /// <summary>Override cache folder for <see cref="RhwpDocument"/> (tests).</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal string? RhwpCacheFolder { get; set; }
+
     /// <summary>The control showing the preview (an <see cref="ImageView"/>, a text box, a handler host...), or null.</summary>
     internal Control? View => _view;
 
@@ -290,11 +314,14 @@ internal sealed class PreviewPane : Panel
 
     private void ClearView()
     {
+        _rhwpJob?.Cancel();
+        _rhwpJob = null;
         SetView(null, PreviewKind.None);
         _title.Text = string.Empty;
         _detail.Text = string.Empty;
         _imageBar.Visible = false;
         _textBar.Visible = false;
+        _documentBar.Visible = false;
     }
 
     private async Task ShowFileAsync(ShellLocation item, string path, int version)
@@ -327,11 +354,39 @@ internal sealed class PreviewPane : Panel
             return;
         }
 
-        // Hancom documents are drawn by the built-in reader (every page, with fonts, tables and pictures), as M-Finder
-        // does: Hancom's own preview handler paints the first page only. Files the reader cannot open (DRM,
-        // password) fall through to that handler.
+        // Hancom documents are rendered page-accurately by rhwp-preview when available; files it cannot open (or
+        // when the helper is absent) fall back to the built-in HWP/HWPX reader, then to the shell preview handler.
         if (HwpDocument.IsHwpPath(path))
         {
+            if (UseRhwp)
+            {
+                var job = _rhwpJob = new RhwpJob();
+                string? cacheFolder = RhwpCacheFolder;
+                RhwpDocument? rhwp = await LoadOrNull(() => RhwpDocument.Open(path, job, cacheFolder));
+                if (version != _version)
+                {
+                    rhwp?.Dispose();
+                    job.Dispose();
+                    return;
+                }
+
+                if (rhwp is not null)
+                {
+                    _rhwpJob = null;
+                    var view = new RhwpView(rhwp, job) { Dock = DockStyle.Fill };
+                    view.PageChanged += (_, _) => UpdateDocumentBar(view);
+                    SetView(view, PreviewKind.Document);
+                    UpdateDocumentBar(view);
+                    _documentBar.Visible = true;
+                    SetHeader(name, $"{type} · {size} · {Loc.F("{0}쪽 · ", rhwp.PageCount)}{Loc.T("내장 한글 뷰어")}");
+                    return;
+                }
+
+                job.Dispose();
+                if (ReferenceEquals(_rhwpJob, job))
+                    _rhwpJob = null;
+            }
+
             HwpPreview? hwp = await LoadOrNull(() => HwpDocument.Preview(path));
             if (version != _version)
                 return;
@@ -534,10 +589,21 @@ internal sealed class PreviewPane : Panel
         return unit == 0 ? $"{bytes:N0}{units[0]}" : $"{value.ToString(value >= 100 ? "N0" : "N1", CultureInfo.CurrentCulture)} {units[unit]}";
     }
 
+    private void UpdateDocumentBar(RhwpView view) =>
+        _pageLabel.Text = Loc.F("{0} / {1}쪽", view.CurrentPage + 1, view.PageCount);
+
     private ToolStripButton CreateButton(string text, string toolTip, Action<ImageView> action) =>
         new(text, null, (_, _) =>
         {
             if (_view is ImageView view)
+                action(view);
+        })
+        { ToolTipText = toolTip, DisplayStyle = ToolStripItemDisplayStyle.Text };
+
+    private ToolStripButton CreateDocumentButton(string text, string toolTip, Action<RhwpView> action) =>
+        new(text, null, (_, _) =>
+        {
+            if (_view is RhwpView view)
                 action(view);
         })
         { ToolTipText = toolTip, DisplayStyle = ToolStripItemDisplayStyle.Text };
@@ -547,6 +613,9 @@ internal sealed class PreviewPane : Panel
         if (disposing)
         {
             _version++;
+            _rhwpJob?.Cancel();
+            _rhwpJob?.Dispose();
+            _rhwpJob = null;
             SetView(null, PreviewKind.None);
         }
 

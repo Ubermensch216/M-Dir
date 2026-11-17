@@ -483,3 +483,6 @@ $RECYCLE.BIN/
 
 # Release packages (publish.ps1)
 artifacts/
+
+# rhwp-preview Rust build artifacts
+packaging/rhwp_preview/target/
