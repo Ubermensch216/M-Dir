@@ -16,7 +16,7 @@ internal static partial class FinderDocumentText
     /// <summary>Extensions whose content search looks at the extracted text.</summary>
     public static readonly HashSet<string> StructuredExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
-        ".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm", ".odt", ".ods", ".odp", ".hwp", ".hwpx", ".pdf",
+        ".docx", ".xlsx", ".pptx", ".docm", ".xlsm", ".pptm", ".odt", ".ods", ".odp", ".hwp", ".hwpx", ".hml", ".hwpml", ".pdf",
     };
 
     [GeneratedRegex(@"</(?:w:p|text:p|text:h|a:p|row|si|hp:p)\s*>|<(?:w:br|w:tab|text:tab|text:line-break|hp:lineBreak|hp:tab)\b[^>]*/?>", RegexOptions.IgnoreCase)]
@@ -35,8 +35,13 @@ internal static partial class FinderDocumentText
                 case ".hwp":
                     {
                         byte[] bytes = File.ReadAllBytes(path);
+                        if (HwpmlReader.IsHwpml(bytes))
+                            return HwpText(HwpmlReader.Read(bytes));
                         return HwpFastText(bytes) ?? HwpText(HwpReader.Read(bytes));
                     }
+
+                case ".hml" or ".hwpml":
+                    return HwpText(HwpmlReader.Read(File.ReadAllBytes(path)));
 
                 case ".hwpx":
                     return Zip(path, e => HwpxSection().IsMatch(e.FullName), HwpxSectionOrder);
@@ -107,23 +112,32 @@ internal static partial class FinderDocumentText
             return null;
 
         uint flags = BitConverter.ToUInt32(header, 36);
-        if ((flags & (0x02 | 0x04 | 0x10)) != 0)
-            return null; // encrypted, distribution-only or DRM
+        if ((flags & (0x02 | 0x10)) != 0)
+            return null; // encrypted or DRM
 
         bool compressed = (flags & 1) != 0;
-        var sections = file.ListStreams("BodyText")
+        bool distribution = (flags & 0x04) != 0;
+        string storage = distribution ? "ViewText" : "BodyText";
+        var sections = file.ListStreams(storage)
             .Select(n => (Name: n, Number: SectionNumber().Match(n)))
             .Where(x => x.Number.Success)
             .OrderBy(x => int.Parse(x.Number.Groups[1].Value, CultureInfo.InvariantCulture))
             .ToList();
+        if (sections.Count == 0 && distribution)
+            return null;
+
         var sb = new StringBuilder();
         foreach ((string name, _) in sections)
         {
-            byte[]? raw = file.ReadStream("BodyText/" + name);
+            byte[]? raw = file.ReadStream(storage + "/" + name);
             if (raw is null)
                 continue;
 
-            byte[] body = compressed ? HwpReader.Inflate(raw) : raw;
+            byte[]? body = distribution
+                ? HwpCrypto.DecryptViewText(raw, compressed)
+                : (compressed ? HwpReader.Inflate(raw) : raw);
+            if (body is null)
+                continue;
             int pos = 0;
             while (pos + 4 <= body.Length)
             {
@@ -143,8 +157,20 @@ internal static partial class FinderDocumentText
                     break;
                 if (tag == 67) // HWPTAG_PARA_TEXT
                 {
-                    AppendParaText(body.AsSpan(pos, (int)size), sb);
-                    sb.Append('\n');
+                    var line = new StringBuilder();
+                    AppendParaText(body.AsSpan(pos, (int)size), line);
+                    sb.Append(HwpPuaMapper.MapText(line.ToString(), unfoldHwp5: true)).Append('\n');
+                }
+                else if (tag == 88 && size >= 6) // HWPTAG_EQEDIT
+                {
+                    int len = BitConverter.ToUInt16(body, pos + 4);
+                    if (len > 0 && 6 + (len * 2) <= size)
+                    {
+                        string eq = Encoding.Unicode.GetString(body, pos + 6, len * 2).Replace("\0", string.Empty).Trim();
+                        string plain = HwpEquation.ToPlainText(eq);
+                        if (plain.Length > 0)
+                            sb.Append(plain).Append('\n');
+                    }
                 }
 
                 pos += (int)size;
@@ -207,6 +233,8 @@ internal static partial class FinderDocumentText
                     {
                         if (run is HwpRun r)
                             sb.Append(r.Text);
+                        else if (run is HwpEquationRun eq)
+                            sb.Append(HwpEquation.ToPlainText(eq.Script));
                     }
 
                     sb.Append('\n');

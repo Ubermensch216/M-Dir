@@ -5,21 +5,66 @@ using System.Text;
 
 namespace MDir.Features.Hwp;
 
-/// <summary>An HWP/HWPX document drawn as an HTML page on disk: white sheets of the document's paper size on a grey desk.</summary>
+/// <summary>An HWP/HWPX/HML or Office document drawn as an HTML page on disk: white sheets on a grey desk.</summary>
 /// <param name="HtmlPath">The page (no script); its pictures are files next to it.</param>
 /// <param name="SheetWidthPx">The width of a sheet plus its margin in CSS pixels, for fitting it to the window.</param>
-/// <param name="Sheets">How many sheets: the document's explicit page and section breaks plus one.</param>
+/// <param name="Sheets">How many sheets: explicit/layout page breaks plus one.</param>
 internal sealed record HwpPreview(string HtmlPath, double SheetWidthPx, int Sheets, bool Truncated);
 
 /// <summary>
-/// Draws <see cref="HwpDoc"/> as HTML for the WebBrowser control: fonts, sizes, colours, letter spacing, alignment,
-/// indents, line spacing, tables (merged cells, backgrounds, borders, heights) and pictures. Pages are not typeset:
-/// a sheet ends at an explicit page or section break and grows with its content.
+/// Draws <see cref="HwpDoc"/> as script-free HTML for the WebBrowser control: Korean font alias/serif-sans stacks,
+/// sizes, colours, letter spacing, alignment, indents, line spacing, equations (stacked fractions/roots), per-side
+/// table borders (merged cells, backgrounds, captions, heights), pictures and footnotes.
 /// </summary>
 internal static class HwpHtml
 {
     private const double PxPerPt = 96.0 / 72.0;
-    private const string DefaultFonts = "'함초롬바탕','맑은 고딕','Malgun Gothic',serif";
+    private const string DefaultFonts = "'HCR Batang','함초롬바탕','맑은 고딕','Malgun Gothic',serif";
+
+    private static readonly Dictionary<string, string> FontAliases = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["함초롬바탕"] = "'HCR Batang','함초롬바탕','한컴바탕'",
+        ["한컴바탕"] = "'HCR Batang','함초롬바탕','한컴바탕'",
+        ["함초롬돋움"] = "'HCR Dotum','함초롬돋움','한컴돋움'",
+        ["한컴돋움"] = "'HCR Dotum','함초롬돋움','한컴돋움'",
+        ["맑은 고딕"] = "'Malgun Gothic','맑은 고딕'",
+        ["맑은고딕"] = "'Malgun Gothic','맑은 고딕'",
+        ["굴림"] = "'Gulim','굴림'",
+        ["굴림체"] = "'GulimChe','굴림체','Gulim'",
+        ["돋움"] = "'Dotum','돋움'",
+        ["돋움체"] = "'DotumChe','돋움체','Dotum'",
+        ["바탕"] = "'Batang','바탕'",
+        ["바탕체"] = "'BatangChe','바탕체','Batang'",
+        ["궁서"] = "'Gungsuh','궁서'",
+        ["궁서체"] = "'GungsuhChe','궁서체','Gungsuh'",
+        ["나눔고딕"] = "'NanumGothic','나눔고딕'",
+        ["나눔명조"] = "'NanumMyeongjo','나눔명조'",
+    };
+
+    /// <summary>Builds a CSS font-family stack preserving serif vs sans-serif fallback (benchmarked from kordoc head-styles.ts).</summary>
+    internal static string CssFontStack(string face)
+    {
+        string trimmed = face.Trim().Replace("'", string.Empty, StringComparison.Ordinal).Replace("\"", string.Empty, StringComparison.Ordinal);
+        if (trimmed.Length == 0)
+            return DefaultFonts;
+
+        string head = FontAliases.TryGetValue(trimmed, out string? alias) ? alias : $"'{trimmed}'";
+        bool isSerif = trimmed.Contains("바탕", StringComparison.Ordinal)
+            || trimmed.Contains("명조", StringComparison.Ordinal)
+            || trimmed.Contains("궁서", StringComparison.Ordinal)
+            || trimmed.Contains("신명", StringComparison.Ordinal)
+            || trimmed.Contains("순명", StringComparison.Ordinal)
+            || trimmed.Contains("Batang", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Myeong", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Mincho", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Gungsuh", StringComparison.OrdinalIgnoreCase)
+            || trimmed.Contains("Serif", StringComparison.OrdinalIgnoreCase);
+
+        string generic = isSerif
+            ? "'HCR Batang','Batang','맑은 고딕',serif"
+            : "'Malgun Gothic','HCR Dotum','Dotum',sans-serif";
+        return $"{head},{generic}";
+    }
 
     /// <summary>Writes index.html (and the pictures, each once) into <paramref name="folder"/>.</summary>
     public static HwpPreview Render(HwpDoc doc, string folder)
@@ -36,22 +81,38 @@ internal static class HwpHtml
         html.Append("td{padding:1.4pt 5.1pt;overflow:hidden;word-wrap:break-word;}");
         html.Append("td.b{border:1px solid #000;}");
         html.Append("img{max-width:100%;vertical-align:bottom;}");
+        html.Append(".tbl-cap{font-size:9pt;color:#333;margin:3pt 0;font-weight:bold;}");
+        html.Append(".eq{font-family:'Cambria Math','Times New Roman',serif;padding:0 1.5pt;}");
+        html.Append(".eq-frac{display:inline-table;vertical-align:middle;text-align:center;font-size:0.88em;line-height:1.1;margin:0 1pt;}");
+        html.Append(".eq-num{display:table-row;border-bottom:1px solid currentColor;padding:0 2pt;}");
+        html.Append(".eq-den{display:table-row;padding:0 2pt;}");
+        html.Append(".eq-rad{border-top:1px solid currentColor;padding:0 1pt;}");
+        html.Append(".footnotes{margin-top:16pt;padding-top:6pt;border-top:1px solid #888;font-size:8.5pt;color:#333;line-height:1.4;}");
+        html.Append(".footnotes p{margin:2pt 0;}");
         html.Append(".note{margin:8px auto;text-align:center;color:#666;font:9pt 'Malgun Gothic',sans-serif;}");
         html.Append("</style></head><body>");
 
         int sheets = 1;
-        html.Append("<div class=\"sheet\">");
+        html.Append("<div class=\"sheet\" id=\"sheet-0\">");
         bool empty = true;
         foreach (object block in doc.Blocks)
         {
             if (block is HwpPara { PageBreak: true } && !empty)
             {
-                html.Append("</div><div class=\"sheet\">");
+                html.Append(CultureInfo.InvariantCulture, $"</div><div class=\"sheet\" id=\"sheet-{sheets}\">");
                 sheets++;
             }
 
             writer.Block(block);
             empty = false;
+        }
+
+        if (doc.Footnotes.Count > 0)
+        {
+            html.Append("<div class=\"footnotes\">");
+            foreach (string note in doc.Footnotes)
+                html.Append("<p>").Append(WebUtility.HtmlEncode(note)).Append("</p>");
+            html.Append("</div>");
         }
 
         html.Append("</div>");
@@ -107,6 +168,11 @@ internal static class HwpHtml
                     Run(text);
                     any = true;
                 }
+                else if (run is HwpEquationRun eq && HwpEquation.ToHtml(eq.Script) is { Length: > 0 } eqHtml)
+                {
+                    html.Append(eqHtml);
+                    any = true;
+                }
                 else if (run is HwpImage image && ImageTag(image) is { } tag)
                 {
                     html.Append(tag);
@@ -124,7 +190,7 @@ internal static class HwpHtml
         {
             var style = new StringBuilder();
             if (run.Font is { Length: > 0 } font)
-                style.Append("font-family:'").Append(font.Replace("'", string.Empty, StringComparison.Ordinal).Replace("\"", string.Empty, StringComparison.Ordinal)).Append("',").Append(DefaultFonts).Append(';');
+                style.Append("font-family:").Append(CssFontStack(font)).Append(';');
             if (run.Size is { } size)
                 style.Append("font-size:").Append(Pt(run.Sup != 0 ? size * 0.7 : size)).Append(';');
             if (run.Spacing != 0)
@@ -152,6 +218,9 @@ internal static class HwpHtml
         private void Table(HwpTable table)
         {
             StringBuilder html = Html;
+            if (!string.IsNullOrEmpty(table.Caption) && !table.CaptionBelow)
+                html.Append("<div class=\"tbl-cap\">").Append(WebUtility.HtmlEncode(table.Caption)).Append("</div>");
+
             bool known = table.ColumnWidths.Count > 0 && table.ColumnWidths.All(w => w is > 0);
             html.Append("<table");
             if (known)
@@ -174,7 +243,7 @@ internal static class HwpHtml
                 foreach (HwpCell cell in row)
                 {
                     html.Append("<td");
-                    if (cell.Border)
+                    if (cell.Borders is null && cell.Border)
                         html.Append(" class=\"b\"");
                     if (cell.ColSpan > 1)
                         html.Append(" colspan=\"").Append(cell.ColSpan).Append('"');
@@ -182,6 +251,14 @@ internal static class HwpHtml
                         html.Append(" rowspan=\"").Append(cell.RowSpan).Append('"');
 
                     html.Append(" style=\"vertical-align:").Append(cell.VAlign);
+                    if (cell.Borders is { } edges)
+                    {
+                        AppendEdge(html, "border-top", edges.Top);
+                        AppendEdge(html, "border-right", edges.Right);
+                        AppendEdge(html, "border-bottom", edges.Bottom);
+                        AppendEdge(html, "border-left", edges.Left);
+                    }
+
                     if (cell.Height is > 0 and var height && cell.RowSpan == 1)
                         html.Append(";height:").Append(Pt(height));
                     if (cell.Background is { } background)
@@ -196,6 +273,16 @@ internal static class HwpHtml
             }
 
             html.Append("</table>");
+            if (!string.IsNullOrEmpty(table.Caption) && table.CaptionBelow)
+                html.Append("<div class=\"tbl-cap\">").Append(WebUtility.HtmlEncode(table.Caption)).Append("</div>");
+        }
+
+        private static void AppendEdge(StringBuilder html, string prop, HwpBorderEdge? edge)
+        {
+            if (edge is null)
+                return;
+
+            html.Append(';').Append(prop).Append(':').Append(Pt(edge.WidthPt)).Append(' ').Append(edge.Style).Append(' ').Append(edge.Color);
         }
 
         private string? ImageTag(HwpImage image)
@@ -234,13 +321,13 @@ internal static class HwpHtml
     private static string Num(double value) => Math.Round(value, 2).ToString(CultureInfo.InvariantCulture);
 }
 
-/// <summary>Reads .hwp and .hwpx files and keeps their drawn pages in %TEMP%\M-Dir\hwp-view, so a document is read once.</summary>
+/// <summary>Reads .hwp, .hwpx and .hml files and keeps their drawn pages in %TEMP%\M-Dir\hwp-view, so a document is read once.</summary>
 internal static class HwpDocument
 {
     private const long MaxFileBytes = 256L * 1024 * 1024;
 
     /// <summary>Bumped when the drawing changes, so pages drawn by an older M-Dir are not reused.</summary>
-    private const int RenderVersion = 3;
+    private const int RenderVersion = 4;
 
     private static readonly TimeSpan CacheAge = TimeSpan.FromDays(3);
     private static int _pruned;
@@ -248,11 +335,11 @@ internal static class HwpDocument
     internal static string CacheFolder { get; set; } = Path.Combine(Path.GetTempPath(), "M-Dir", "hwp-view");
 
     public static bool IsHwpPath(string path) =>
-        Path.GetExtension(path).ToLowerInvariant() is ".hwp" or ".hwpx";
+        Path.GetExtension(path).ToLowerInvariant() is ".hwp" or ".hwpx" or ".hml" or ".hwpml";
 
     /// <summary>
     /// The drawn document (from the cache when the file did not change), or null when it cannot be read:
-    /// password-protected, distribution-only, DRM-protected, damaged, or not really a Hancom file.
+    /// password-protected, DRM-protected, damaged, or not really a Hancom file.
     /// </summary>
     public static HwpPreview? Preview(string path)
     {
@@ -285,8 +372,6 @@ internal static class HwpDocument
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
             {
-                // Drawn at the same time by another M-Dir, or the new folder is briefly locked (a virus scanner):
-                // show this copy; it is not reused and the cleanup removes it later.
                 return drawn;
             }
 
@@ -321,9 +406,14 @@ internal static class HwpDocument
     {
         try
         {
-            // Look at the content, not the name: some .hwp files are really HWPX and the other way round.
-            bool zip = data is [0x50, 0x4B, ..];
-            return zip ? HwpxReader.Read(new MemoryStream(data, writable: false)) : HwpReader.Read(data);
+            // Look at magic bytes, not extension: .hwp files may actually be HWPX (ZIP) or HWPML (XML).
+            if (data is [0x50, 0x4B, ..])
+                return HwpxReader.ReadBytes(data);
+
+            if (HwpmlReader.IsHwpml(data))
+                return HwpmlReader.Read(data);
+
+            return HwpReader.Read(data);
         }
         catch (Exception ex) when (ex is IOException or InvalidDataException or System.Xml.XmlException or ArgumentException
             or IndexOutOfRangeException or OverflowException or FormatException or InvalidOperationException or KeyNotFoundException

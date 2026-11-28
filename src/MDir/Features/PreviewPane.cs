@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Globalization;
 using MDir.Localization;
 using MDir.Features.Hwp;
+using MDir.Features.Office;
 using MDir.Shell;
 
 namespace MDir.Features;
@@ -56,7 +57,10 @@ internal sealed class PreviewPane : Panel
     private readonly ToolStrip _imageBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
     private readonly ToolStrip _textBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
     private readonly ToolStrip _documentBar = new() { Dock = DockStyle.Top, GripStyle = ToolStripGripStyle.Hidden, Visible = false, CanOverflow = false };
+    private readonly ToolStripButton _docPrevButton;
     private readonly ToolStripLabel _pageLabel = new() { AutoSize = true };
+    private readonly ToolStripButton _docNextButton;
+    private readonly ToolStripSeparator _docNavSep = new();
     private readonly ToolStripButton _wrapButton = new("줄 바꿈") { CheckOnClick = true, ToolTipText = "긴 줄을 창 너비에서 줄 바꿈", DisplayStyle = ToolStripItemDisplayStyle.Text };
     private readonly ToolStripTextBox _findBox = new() { AutoSize = false, Width = 150, ToolTipText = "찾을 글 (Enter: 다음, Shift+Enter: 이전)" };
     private readonly ToolStripButton _slideshowButton = new("슬라이드쇼") { CheckOnClick = true, ToolTipText = "몇 초마다 다음 그림을 보여 줍니다", DisplayStyle = ToolStripItemDisplayStyle.Text };
@@ -103,16 +107,18 @@ internal sealed class PreviewPane : Panel
             CreateButton("↷", "오른쪽으로 회전", (view) => view.Rotate(clockwise: true)),
         ]);
 
+        _docPrevButton = CreateAnyDocumentButton("◀", "이전 쪽 (PageUp)", view => view.StepPage(-1), html => html.StepSheet(-1));
+        _docNextButton = CreateAnyDocumentButton("▶", "다음 쪽 (PageDown)", view => view.StepPage(1), html => html.StepSheet(1));
         _documentBar.Items.AddRange(
         [
-            CreateDocumentButton("◀", "이전 쪽 (PageUp)", view => view.StepPage(-1)),
+            _docPrevButton,
             _pageLabel,
-            CreateDocumentButton("▶", "다음 쪽 (PageDown)", view => view.StepPage(1)),
-            new ToolStripSeparator(),
-            CreateDocumentButton("맞춤", "창 너비에 맞춤", view => view.FitToWindow()),
-            CreateDocumentButton("100%", "실제 크기", view => view.ActualSize()),
-            CreateDocumentButton("＋", "확대 (Ctrl+마우스 휠)", view => view.ZoomBy(1.25)),
-            CreateDocumentButton("－", "축소 (Ctrl+마우스 휠)", view => view.ZoomBy(0.8)),
+            _docNextButton,
+            _docNavSep,
+            CreateAnyDocumentButton("맞춤", "창 너비에 맞춤", view => view.FitToWindow(), html => html.FitToWindow()),
+            CreateAnyDocumentButton("100%", "실제 크기", view => view.ActualSize(), html => html.ActualSize()),
+            CreateAnyDocumentButton("＋", "확대 (Ctrl+마우스 휠)", view => view.ZoomBy(1.25), html => html.ZoomBy(1.25)),
+            CreateAnyDocumentButton("－", "축소 (Ctrl+마우스 휠)", view => view.ZoomBy(0.8), html => html.ZoomBy(0.8)),
         ]);
 
         // Z-order: fill last, so the bars dock first (top to bottom: title, detail, image bar, text bar, document bar).
@@ -248,6 +254,10 @@ internal sealed class PreviewPane : Panel
     /// <summary>Use <c>rhwp-preview.exe</c> when available; tests may set false to exercise the HTML fallback.</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     internal bool UseRhwp { get; set; } = true;
+
+    /// <summary>Use Windows shell preview handlers for Office files when registered; tests may set false to exercise the built-in HTML fallback.</summary>
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+    internal bool UseShellHandlerForOffice { get; set; } = true;
 
     /// <summary>Override cache folder for <see cref="RhwpDocument"/> (tests).</summary>
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -393,9 +403,7 @@ internal sealed class PreviewPane : Panel
 
             if (hwp is not null)
             {
-                SetView(new HwpView(hwp) { Dock = DockStyle.Fill }, PreviewKind.Document);
-                string sheets = hwp.Sheets > 1 ? Loc.F("{0}쪽 구획 · ", hwp.Sheets) : string.Empty;
-                SetHeader(name, $"{type} · {size} · {sheets}내장 한글 뷰어{(hwp.Truncated ? " · 앞부분만 표시" : string.Empty)}");
+                ShowHtmlDocument(hwp, name, type, size, Loc.T("내장 한글 뷰어"));
                 return;
             }
         }
@@ -424,24 +432,41 @@ internal sealed class PreviewPane : Panel
                 return;
             }
         }
-        else if (PreviewHandlerHost.HasHandler(path))
+        else
         {
-            // Handlers must be driven from this (UI) thread.
-            var host = new PreviewHandlerHost { Dock = DockStyle.Fill };
-            SetView(host, PreviewKind.Handler);
-            if (host.TryShow(path))
+            bool isOffice = OfficeDocument.IsOfficePath(path);
+            if ((!isOffice || UseShellHandlerForOffice) && PreviewHandlerHost.HasHandler(path))
             {
-                SetHeader(name, $"{type} · {size} · {host.HandlerName ?? "미리보기 처리기"}");
-                return;
+                // Handlers must be driven from this (UI) thread.
+                var host = new PreviewHandlerHost { Dock = DockStyle.Fill };
+                SetView(host, PreviewKind.Handler);
+                if (host.TryShow(path))
+                {
+                    SetHeader(name, $"{type} · {size} · {host.HandlerName ?? "미리보기 처리기"}");
+                    return;
+                }
+
+                SetView(null, PreviewKind.None);
             }
 
-            SetView(null, PreviewKind.None);
-        }
-        else if (await LoadOrNull(() => TextFile.Read(path)) is { IsBinary: false } sniffed && version == _version)
-        {
-            // Unknown extension, but the content is text.
-            ShowText(name, type, size, sniffed);
-            return;
+            if (isOffice)
+            {
+                HwpPreview? office = await LoadOrNull(() => OfficeDocument.Preview(path));
+                if (version != _version)
+                    return;
+
+                if (office is not null)
+                {
+                    ShowHtmlDocument(office, name, type, size, Loc.T("내장 문서 뷰어"));
+                    return;
+                }
+            }
+            else if (await LoadOrNull(() => TextFile.Read(path)) is { IsBinary: false } sniffed && version == _version)
+            {
+                // Unknown extension, but the content is text.
+                ShowText(name, type, size, sniffed);
+                return;
+            }
         }
 
         if (version == _version)
@@ -589,8 +614,39 @@ internal sealed class PreviewPane : Panel
         return unit == 0 ? $"{bytes:N0}{units[0]}" : $"{value.ToString(value >= 100 ? "N0" : "N1", CultureInfo.CurrentCulture)} {units[unit]}";
     }
 
-    private void UpdateDocumentBar(RhwpView view) =>
+    private void ShowHtmlDocument(HwpPreview preview, string name, string type, string size, string viewerLabel)
+    {
+        var view = new HwpView(preview) { Dock = DockStyle.Fill };
+        view.SheetChanged += (_, _) => UpdateHtmlDocumentBar(view);
+        SetView(view, PreviewKind.Document);
+        UpdateHtmlDocumentBar(view);
+        _documentBar.Visible = true;
+        string sheets = preview.Sheets > 1 ? Loc.F("{0}쪽 구획 · ", preview.Sheets) : string.Empty;
+        string truncated = preview.Truncated ? Loc.T(" · 앞부분만 표시") : string.Empty;
+        SetHeader(name, $"{type} · {size} · {sheets}{viewerLabel}{truncated}");
+    }
+
+    private void UpdateDocumentBar(RhwpView view)
+    {
+        SetDocNavVisible(true);
         _pageLabel.Text = Loc.F("{0} / {1}쪽", view.CurrentPage + 1, view.PageCount);
+    }
+
+    private void UpdateHtmlDocumentBar(HwpView view)
+    {
+        bool multi = view.SheetCount > 1;
+        SetDocNavVisible(multi);
+        if (multi)
+            _pageLabel.Text = Loc.F("{0} / {1}쪽", view.CurrentSheet + 1, view.SheetCount);
+    }
+
+    private void SetDocNavVisible(bool visible)
+    {
+        _docPrevButton.Visible = visible;
+        _pageLabel.Visible = visible;
+        _docNextButton.Visible = visible;
+        _docNavSep.Visible = visible;
+    }
 
     private ToolStripButton CreateButton(string text, string toolTip, Action<ImageView> action) =>
         new(text, null, (_, _) =>
@@ -600,11 +656,13 @@ internal sealed class PreviewPane : Panel
         })
         { ToolTipText = toolTip, DisplayStyle = ToolStripItemDisplayStyle.Text };
 
-    private ToolStripButton CreateDocumentButton(string text, string toolTip, Action<RhwpView> action) =>
+    private ToolStripButton CreateAnyDocumentButton(string text, string toolTip, Action<RhwpView> rhwpAction, Action<HwpView> htmlAction) =>
         new(text, null, (_, _) =>
         {
-            if (_view is RhwpView view)
-                action(view);
+            if (_view is RhwpView rhwp)
+                rhwpAction(rhwp);
+            else if (_view is HwpView html)
+                htmlAction(html);
         })
         { ToolTipText = toolTip, DisplayStyle = ToolStripItemDisplayStyle.Text };
 

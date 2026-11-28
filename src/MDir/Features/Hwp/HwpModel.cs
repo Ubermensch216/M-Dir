@@ -1,6 +1,6 @@
 namespace MDir.Features.Hwp;
 
-// The document model the HWP and HWPX readers produce and HwpHtml draws (the same shape as M-Finder's viewer model).
+// The document model the HWP, HWPX, HWPML and built-in Office readers produce and HwpHtml draws.
 // Lengths are points (1/72 inch, HWPUNIT / 100); colours are "#rrggbb" or null for the default.
 
 /// <summary>A stretch of text in one character shape.</summary>
@@ -24,13 +24,25 @@ internal sealed class HwpRun
     public double Spacing { get; init; }
 }
 
+/// <summary>An inline equation (Hancom EqEdit script), drawn as HTML math by <see cref="HwpHtml"/>.</summary>
+internal sealed record HwpEquationRun(string Script);
+
 /// <summary>A picture embedded in the document (PNG, JPEG, GIF or BMP bytes).</summary>
 internal sealed record HwpImage(byte[] Data, double? Width, double? Height);
 
-/// <summary>A paragraph: runs of text and pictures.</summary>
+/// <summary>One visible edge of a table cell border.</summary>
+internal sealed record HwpBorderEdge(string Style, double WidthPt, string Color);
+
+/// <summary>Per-side borders for a table cell; null sides have no visible border.</summary>
+internal sealed record HwpCellBorders(HwpBorderEdge? Top, HwpBorderEdge? Right, HwpBorderEdge? Bottom, HwpBorderEdge? Left)
+{
+    public bool HasAny => Top is not null || Right is not null || Bottom is not null || Left is not null;
+}
+
+/// <summary>A paragraph: runs of text, equations and pictures.</summary>
 internal sealed class HwpPara
 {
-    /// <summary><see cref="HwpRun"/> and <see cref="HwpImage"/> items in order.</summary>
+    /// <summary><see cref="HwpRun"/>, <see cref="HwpEquationRun"/> and <see cref="HwpImage"/> items in order.</summary>
     public List<object> Runs { get; } = [];
 
     public string Align { get; init; } = "left";
@@ -64,6 +76,9 @@ internal sealed class HwpCell
     public double? Height { get; set; }
     public string VAlign { get; set; } = "top";
     public bool Border { get; set; } = true;
+
+    /// <summary>Per-side border definitions when known from BorderFill; overrides <see cref="Border"/> when set.</summary>
+    public HwpCellBorders? Borders { get; set; }
 }
 
 internal sealed class HwpTable
@@ -71,6 +86,8 @@ internal sealed class HwpTable
     public List<List<HwpCell>> Rows { get; } = [];
     public List<double?> ColumnWidths { get; } = [];
     public bool Border { get; set; } = true;
+    public string? Caption { get; set; }
+    public bool CaptionBelow { get; set; }
 }
 
 /// <summary>Paper size and margins (points).</summary>
@@ -95,6 +112,9 @@ internal sealed class HwpDoc
 {
     /// <summary><see cref="HwpPara"/> and <see cref="HwpTable"/> items.</summary>
     public List<object> Blocks { get; } = [];
+
+    /// <summary>Footnotes and endnotes collected across the document.</summary>
+    public List<string> Footnotes { get; } = [];
 
     public HwpPage Page { get; set; } = HwpPage.Default;
 

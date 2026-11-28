@@ -2,12 +2,18 @@ using System.Text;
 
 namespace MDir.Features.Hwp;
 
-/// <summary>A minimal reader of OLE compound (CFB) files: enough to list a storage and read a stream by path.</summary>
+/// <summary>
+/// A lenient reader of OLE compound (CFB) files: lists storages and reads streams by path.
+/// Hardened with kordoc's lenient CFB safeguards (FAT size capping against file length, cycle detection,
+/// mini-stream to regular-FAT fallback, and unique-name fallback when the directory sibling tree is damaged).
+/// </summary>
 internal sealed class CompoundFile
 {
     private const uint EndOfChain = 0xFFFFFFFE;
     private const uint FreeSector = 0xFFFFFFFF;
     private const int EntrySize = 128;
+    private const int MaxStreamBytes = 100 * 1024 * 1024;
+    private const int MaxDirEntries = 100_000;
 
     private readonly byte[] _data;
     private readonly int _sectorSize;
@@ -23,15 +29,27 @@ internal sealed class CompoundFile
     private CompoundFile(byte[] data)
     {
         _data = data;
-        _sectorSize = 1 << BitConverter.ToUInt16(data, 30);
-        _miniSectorSize = 1 << BitConverter.ToUInt16(data, 32);
+        int sectorShift = BitConverter.ToUInt16(data, 30);
+        int miniShift = BitConverter.ToUInt16(data, 32);
+        if (sectorShift is < 7 or > 16 || miniShift > 16)
+            throw new InvalidDataException("Not a compound file.");
+
+        _sectorSize = 1 << sectorShift;
+        _miniSectorSize = 1 << miniShift;
         _miniCutoff = BitConverter.ToUInt32(data, 56);
         if (_sectorSize is not (512 or 4096) || _miniSectorSize > _sectorSize)
             throw new InvalidDataException("Not a compound file.");
 
+        // Cap FAT sector count by actual file size to prevent huge allocations on malformed headers.
+        uint headerFatCount = BitConverter.ToUInt32(data, 44);
+        long maxRealSectors = Math.Max(1L, ((data.Length - 512L) + _sectorSize - 1) / _sectorSize);
+        int entriesPerSector = _sectorSize / 4;
+        long maxFatSectors = Math.Max(1L, (maxRealSectors + entriesPerSector - 1) / entriesPerSector);
+        int fatLimit = (int)Math.Min(Math.Min(headerFatCount > 0 ? headerFatCount : maxFatSectors, maxFatSectors), 10_000);
+
         // The FAT sectors are listed in the header (109 of them) and then in the DIFAT chain.
         var fatSectors = new List<uint>();
-        for (int i = 0; i < 109; i++)
+        for (int i = 0; i < 109 && fatSectors.Count < fatLimit; i++)
         {
             uint sector = BitConverter.ToUInt32(data, 76 + (i * 4));
             if (sector is FreeSector or EndOfChain)
@@ -41,15 +59,23 @@ internal sealed class CompoundFile
         }
 
         uint difat = BitConverter.ToUInt32(data, 68);
-        int perSector = (_sectorSize / 4) - 1;
-        for (int guard = 0; difat is not (FreeSector or EndOfChain) && guard < 100_000; guard++)
+        int perSector = entriesPerSector - 1;
+        var seenDifat = new HashSet<uint>();
+        for (int guard = 0; difat is not (FreeSector or EndOfChain) && guard < 10_000 && fatSectors.Count < fatLimit; guard++)
         {
-            int offset = SectorOffset(difat);
-            for (int i = 0; i < perSector; i++)
+            if (!seenDifat.Add(difat))
+                break;
+
+            long offsetLong = SectorOffsetLong(difat);
+            if (offsetLong < 0 || offsetLong + _sectorSize > data.Length)
+                break;
+
+            int offset = (int)offsetLong;
+            for (int i = 0; i < perSector && fatSectors.Count < fatLimit; i++)
             {
                 uint sector = BitConverter.ToUInt32(data, offset + (i * 4));
                 if (sector is FreeSector or EndOfChain)
-                    break;
+                    continue;
 
                 fatSectors.Add(sector);
             }
@@ -57,12 +83,13 @@ internal sealed class CompoundFile
             difat = BitConverter.ToUInt32(data, offset + (perSector * 4));
         }
 
-        _fat = new uint[fatSectors.Count * (_sectorSize / 4)];
+        _fat = new uint[fatSectors.Count * entriesPerSector];
+        Array.Fill(_fat, FreeSector);
         for (int i = 0; i < fatSectors.Count; i++)
         {
-            int offset = SectorOffset(fatSectors[i]);
-            if (offset + _sectorSize <= data.Length)
-                Buffer.BlockCopy(data, offset, _fat, i * _sectorSize, _sectorSize);
+            long offsetLong = SectorOffsetLong(fatSectors[i]);
+            if (offsetLong >= 0 && offsetLong + _sectorSize <= data.Length)
+                Buffer.BlockCopy(data, (int)offsetLong, _fat, i * _sectorSize, _sectorSize);
         }
     }
 
@@ -73,9 +100,16 @@ internal sealed class CompoundFile
         if (data.Length < 512 || !data.AsSpan(0, 8).SequenceEqual(signature))
             return null;
 
-        var file = new CompoundFile(data);
-        file.Load();
-        return file;
+        try
+        {
+            var file = new CompoundFile(data);
+            file.Load();
+            return file;
+        }
+        catch (Exception ex) when (ex is InvalidDataException or OverflowException or ArgumentException or IndexOutOfRangeException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The names of the streams directly inside the storage at <paramref name="storage"/> (a path).</summary>
@@ -99,16 +133,34 @@ internal sealed class CompoundFile
         if (Find(path) is not { Type: 2 } entry)
             return null;
 
-        return entry.Size < _miniCutoff ? ReadMini(entry.Start, entry.Size) : ReadChain(entry.Start, entry.Size);
+        if (entry.Size <= 0)
+            return [];
+
+        if (entry.Size > MaxStreamBytes)
+            return null;
+
+        if (entry.Size < _miniCutoff)
+        {
+            byte[] mini = ReadMini(entry.Start, entry.Size);
+            if (mini.Length > 0)
+                return mini;
+        }
+
+        return ReadChain(entry.Start, entry.Size);
     }
 
     private void Load()
     {
-        byte[] directory = ReadChain(BitConverter.ToUInt32(_data, 48), long.MaxValue);
-        for (int offset = 0; offset + EntrySize <= directory.Length; offset += EntrySize)
+        byte[] directory = ReadChain(BitConverter.ToUInt32(_data, 48), (long)MaxDirEntries * EntrySize);
+        bool v3 = BitConverter.ToUInt16(_data, 26) <= 3;
+        for (int offset = 0; offset + EntrySize <= directory.Length && _entries.Count < MaxDirEntries; offset += EntrySize)
         {
-            int nameLength = Math.Max(0, BitConverter.ToUInt16(directory, offset + 64) - 2);
-            string name = Encoding.Unicode.GetString(directory, offset, Math.Min(nameLength, 64));
+            int rawNameLen = BitConverter.ToUInt16(directory, offset + 64);
+            int nameLength = rawNameLen is > 0 and <= 64 ? Math.Max(0, rawNameLen - 2) : 0;
+            string name = nameLength > 0 ? Encoding.Unicode.GetString(directory, offset, nameLength) : string.Empty;
+            long size = v3
+                ? BitConverter.ToUInt32(directory, offset + 120)
+                : (long)BitConverter.ToUInt64(directory, offset + 120);
             _entries.Add(new Entry(
                 name,
                 directory[offset + 66],
@@ -116,7 +168,7 @@ internal sealed class CompoundFile
                 BitConverter.ToInt32(directory, offset + 72),
                 BitConverter.ToInt32(directory, offset + 76),
                 BitConverter.ToUInt32(directory, offset + 116),
-                (long)BitConverter.ToUInt64(directory, offset + 120)));
+                size));
         }
 
         if (_entries.Count == 0)
@@ -125,25 +177,38 @@ internal sealed class CompoundFile
         uint miniFatStart = BitConverter.ToUInt32(_data, 60);
         if (miniFatStart is not (FreeSector or EndOfChain))
         {
-            byte[] raw = ReadChain(miniFatStart, long.MaxValue);
+            byte[] raw = ReadChain(miniFatStart, MaxStreamBytes);
             _miniFat = new uint[raw.Length / 4];
             Buffer.BlockCopy(raw, 0, _miniFat, 0, _miniFat.Length * 4);
         }
 
         Entry root = _entries[0];
-        _miniStream = ReadChain(root.Start, root.Size);
+        if (root.Type == 5)
+            _miniStream = ReadChain(root.Start, root.Size > 0 ? Math.Min(root.Size, MaxStreamBytes) : MaxStreamBytes);
     }
 
-    private int SectorOffset(uint sector) => checked((int)((sector + 1L) * _sectorSize));
+    private long SectorOffsetLong(uint sector) => ((long)sector + 1L) * _sectorSize;
 
-    /// <summary>Reads a chain of regular (FAT) sectors, at most <paramref name="size"/> bytes.</summary>
+    /// <summary>Reads a chain of regular (FAT) sectors, at most <paramref name="size"/> bytes, guarding against cycles.</summary>
     private byte[] ReadChain(uint start, long size)
     {
+        if (start is EndOfChain or FreeSector || size <= 0)
+            return [];
+
+        long limit = Math.Min(size, MaxStreamBytes);
         var output = new MemoryStream();
+        var visited = new HashSet<uint>();
         uint sector = start;
-        for (int guard = 0; sector is not (EndOfChain or FreeSector) && sector < _fat.Length && guard <= _fat.Length && output.Length < size; guard++)
+        while (sector is not (EndOfChain or FreeSector) && sector < _fat.Length && output.Length < limit)
         {
-            int offset = SectorOffset(sector);
+            if (!visited.Add(sector))
+                break;
+
+            long offsetLong = SectorOffsetLong(sector);
+            if (offsetLong < 0 || offsetLong >= _data.Length)
+                break;
+
+            int offset = (int)offsetLong;
             int count = Math.Min(_sectorSize, _data.Length - offset);
             if (count <= 0)
                 break;
@@ -152,16 +217,27 @@ internal sealed class CompoundFile
             sector = _fat[sector];
         }
 
-        return Trim(output, size);
+        return Trim(output, limit);
     }
 
     private byte[] ReadMini(uint start, long size)
     {
+        if (start is EndOfChain or FreeSector || size <= 0 || _miniFat.Length == 0 || _miniStream.Length == 0)
+            return [];
+
+        long limit = Math.Min(size, MaxStreamBytes);
         var output = new MemoryStream();
+        var visited = new HashSet<uint>();
         uint sector = start;
-        for (int guard = 0; sector is not (EndOfChain or FreeSector) && sector < _miniFat.Length && guard <= _miniFat.Length && output.Length < size; guard++)
+        while (sector is not (EndOfChain or FreeSector) && sector < _miniFat.Length && output.Length < limit)
         {
+            if (!visited.Add(sector))
+                break;
+
             long offset = (long)sector * _miniSectorSize;
+            if (offset < 0 || offset >= _miniStream.Length)
+                break;
+
             int count = (int)Math.Min(_miniSectorSize, _miniStream.Length - offset);
             if (count <= 0)
                 break;
@@ -170,7 +246,7 @@ internal sealed class CompoundFile
             sector = _miniFat[sector];
         }
 
-        return Trim(output, size);
+        return Trim(output, limit);
     }
 
     private static byte[] Trim(MemoryStream output, long size)
@@ -184,8 +260,12 @@ internal sealed class CompoundFile
         if (_entries.Count == 0)
             return null;
 
-        Entry current = _entries[0];
-        foreach (string part in path.Split('/', StringSplitOptions.RemoveEmptyEntries))
+        string[] parts = path.Split('/', StringSplitOptions.RemoveEmptyEntries);
+        if (parts.Length == 0)
+            return _entries[0];
+
+        Entry? current = _entries[0];
+        foreach (string part in parts)
         {
             Entry? next = null;
             Walk(current.Child, entry =>
@@ -194,12 +274,22 @@ internal sealed class CompoundFile
                     next = entry;
             });
             if (next is null)
-                return null;
+            {
+                current = null;
+                break;
+            }
 
             current = next;
         }
 
-        return current;
+        if (current is not null)
+            return current;
+
+        // Lenient fallback when the sibling tree is damaged: match only if the final name is unique across all entries
+        // (avoids confusing BodyText/Section0 with ViewText/Section0).
+        string leaf = parts[^1];
+        List<Entry> matches = _entries.Where(e => e.Type is 1 or 2 or 5 && string.Equals(e.Name, leaf, StringComparison.OrdinalIgnoreCase)).ToList();
+        return matches.Count == 1 ? matches[0] : null;
     }
 
     /// <summary>Visits a storage's children (a binary tree of siblings) without recursion, guarding against cycles.</summary>

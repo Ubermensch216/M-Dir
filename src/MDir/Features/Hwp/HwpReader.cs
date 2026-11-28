@@ -1,33 +1,45 @@
+using System.Globalization;
 using System.IO.Compression;
 using System.Text;
 
 namespace MDir.Features.Hwp;
 
 /// <summary>
-/// Reads an HWP 5.x document (an OLE compound file) into <see cref="HwpDoc"/>: character and paragraph shapes, border
-/// fills and the picture table from DocInfo, then the record trees of BodyText/Section0, Section1... (paragraphs,
-/// tables, pictures, text boxes). Ported from M-Finder's viewer (filefinder/viewers/hwp.py).
+/// Reads an HWP 5.x document (OLE compound file, including distribution-only documents via <see cref="HwpCrypto"/>)
+/// into <see cref="HwpDoc"/>: character/paragraph shapes, per-side border fills, auto-numbering/bullets, pictures,
+/// tables, text boxes, equations (<c>EQEDIT</c>), footnotes, PUA mapping, and <c>PARA_LINE_SEG</c> page boundaries.
 /// </summary>
 internal sealed class HwpReader
 {
-    private const int TagIdMappings = 17, TagBinData = 18, TagFaceName = 19, TagBorderFill = 20, TagCharShape = 21, TagParaShape = 25;
-    private const int TagParaHeader = 66, TagParaText = 67, TagParaCharShape = 68;
-    private const int TagCtrlHeader = 71, TagListHeader = 72, TagPageDef = 73, TagTable = 77, TagPicture = 85;
+    private const int TagIdMappings = 17, TagBinData = 18, TagFaceName = 19, TagBorderFill = 20, TagCharShape = 21;
+    private const int TagNumbering = 23, TagBullet = 24, TagParaShape = 25;
+    private const int TagParaHeader = 66, TagParaText = 67, TagParaCharShape = 68, TagParaLineSeg = 69;
+    private const int TagCtrlHeader = 71, TagListHeader = 72, TagPageDef = 73, TagTable = 77, TagPicture = 85, TagEqEdit = 88;
+    private const int MaxDecompressBytes = 100 * 1024 * 1024;
+    private const int MidPageVertPos = 2000;
 
     private readonly CompoundFile _file;
     private readonly bool _compressed;
+    private readonly bool _distribution;
     private readonly List<CharShape> _chars = [];
     private readonly List<ParaShape> _paras = [];
     private readonly List<Fill> _fills = [];
+    private readonly List<NumberingDef> _numberings = [];
+    private readonly List<string> _bullets = [];
     private readonly List<(int Id, string Extension, int Attributes)> _bins = [];
+    private readonly HwpNumberingState _numberingState = new();
+    private readonly List<string> _footnotes = [];
+    private int _outlineNumberingId;
     private int _count;
     private bool _truncated;
 
     private sealed record CharShape(double Size, bool Italic, bool Bold, bool Underline, bool Strike, int Sup, string? Color, string? Font, double Spacing);
 
-    private sealed record ParaShape(string Align, double Left, double First, double Before, double After, double? Line);
+    private sealed record ParaShape(string Align, double Left, double First, double Before, double After, double? Line, int HeadType, int ParaLevel, int NumberingId);
 
-    private sealed record Fill(bool Border, string? Background);
+    private sealed record Fill(bool Border, HwpCellBorders Borders, string? Background);
+
+    private sealed record NumberingDef(string[] LevelFormats, string[] NumberFormats, int[] StartNumbers);
 
     private sealed class Node(int tag, int level, byte[] data)
     {
@@ -37,15 +49,16 @@ internal sealed class HwpReader
         public List<Node> Kids { get; } = [];
     }
 
-    private HwpReader(CompoundFile file, bool compressed)
+    private HwpReader(CompoundFile file, bool compressed, bool distribution)
     {
         _file = file;
         _compressed = compressed;
+        _distribution = distribution;
     }
 
     /// <summary>
-    /// The document, or null when it is not an HWP 5 file or cannot be read without a password (encrypted,
-    /// distribution-only or DRM-protected).
+    /// The document, or null when it is not an HWP 5 file or cannot be read without a password (encrypted or
+    /// DRM-protected). Distribution-only documents (flag 0x04) are decrypted from <c>ViewText/Section*</c>.
     /// </summary>
     public static HwpDoc? Read(byte[] data)
     {
@@ -57,10 +70,12 @@ internal sealed class HwpReader
             return null;
 
         uint flags = BitConverter.ToUInt32(header, 36);
-        if ((flags & (0x02 | 0x04 | 0x10)) != 0)
-            return null;
+        if ((flags & (0x02 | 0x10)) != 0)
+            return null; // password-encrypted or DRM
 
-        var reader = new HwpReader(file, (flags & 0x01) != 0);
+        bool compressed = (flags & 0x01) != 0;
+        bool distribution = (flags & 0x04) != 0;
+        var reader = new HwpReader(file, compressed, distribution);
         return reader.ReadDocument();
     }
 
@@ -70,23 +85,30 @@ internal sealed class HwpReader
             return null;
 
         ReadDocInfo(docInfo);
-        var sections = _file.ListStreams("BodyText")
+        string storage = _distribution ? "ViewText" : "BodyText";
+        var sections = _file.ListStreams(storage)
             .Where(n => n.StartsWith("Section", StringComparison.OrdinalIgnoreCase) && int.TryParse(n.AsSpan(7), out _))
-            .OrderBy(n => int.Parse(n.AsSpan(7)))
+            .OrderBy(n => int.Parse(n.AsSpan(7), CultureInfo.InvariantCulture))
             .ToList();
         if (sections.Count == 0)
             return null;
 
         var doc = new HwpDoc();
         bool first = true;
+        int loadedSections = 0;
         foreach (string name in sections)
         {
-            if (ReadPart("BodyText/" + name) is not { } data)
+            byte[]? data = ReadSectionData(storage + "/" + name);
+            if (data is null)
                 continue;
 
+            loadedSections++;
             List<Node> roots = Tree(data);
             if (first && Find(roots, TagPageDef) is { } pageDef)
                 doc.Page = PageOf(pageDef.Data);
+
+            // Detect real page boundaries from PARA_LINE_SEG when all top-level paragraphs carry layout cache.
+            HashSet<Node> layoutPageBreaks = DetectLayoutPageBreaks(roots);
 
             int start = doc.Blocks.Count;
             foreach (Node node in roots)
@@ -102,7 +124,11 @@ internal sealed class HwpReader
 
                 try
                 {
-                    doc.Blocks.AddRange(Para(node));
+                    List<object> blocks = Para(node);
+                    if (layoutPageBreaks.Contains(node) && blocks.Count > 0 && blocks[0] is HwpPara firstPara)
+                        firstPara.PageBreak = true;
+
+                    doc.Blocks.AddRange(blocks);
                 }
                 catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException)
                 {
@@ -120,8 +146,23 @@ internal sealed class HwpReader
                 break;
         }
 
+        if (loadedSections == 0)
+            return null;
+
+        doc.Footnotes.AddRange(_footnotes);
         doc.Truncated = _truncated;
         return doc;
+    }
+
+    private byte[]? ReadSectionData(string path)
+    {
+        if (_distribution)
+        {
+            byte[]? raw = _file.ReadStream(path);
+            return raw is null ? null : HwpCrypto.DecryptViewText(raw, _compressed);
+        }
+
+        return ReadPart(path);
     }
 
     private byte[]? ReadPart(string path)
@@ -130,16 +171,45 @@ internal sealed class HwpReader
         return raw is null ? null : _compressed ? Inflate(raw) : raw;
     }
 
+    /// <summary>Inflates an HWP compressed stream (supports both zlib-wrapped 0x78 and raw RFC-1951 deflate, capped at 100 MB).</summary>
     internal static byte[] Inflate(byte[] raw)
     {
+        if (raw.Length >= 2 && raw[0] == 0x78)
+        {
+            try
+            {
+                using var zInput = new MemoryStream(raw);
+                using var zlib = new ZLibStream(zInput, CompressionMode.Decompress);
+                return CopyBounded(zlib);
+            }
+            catch (InvalidDataException)
+            {
+                // Fall through to raw deflate.
+            }
+        }
+
         using var input = new MemoryStream(raw);
         using var deflate = new DeflateStream(input, CompressionMode.Decompress);
+        return CopyBounded(deflate);
+    }
+
+    private static byte[] CopyBounded(Stream source)
+    {
         using var output = new MemoryStream();
-        deflate.CopyTo(output);
+        byte[] buffer = new byte[16384];
+        int read;
+        while ((read = source.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            if (output.Length + read > MaxDecompressBytes)
+                throw new InvalidDataException("Decompressed stream exceeds safety limit.");
+
+            output.Write(buffer, 0, read);
+        }
+
         return output.ToArray();
     }
 
-    // ---- records ----
+    // ---- records & layout page boundaries ----
 
     private static IEnumerable<(int Tag, int Level, byte[] Data)> Records(byte[] data)
     {
@@ -182,6 +252,139 @@ internal sealed class HwpReader
         return roots;
     }
 
+    /// <summary>
+    /// Detects actual page transitions from <c>PARA_LINE_SEG</c> vertical-position resets when every top-level
+    /// paragraph has a layout cache (benchmarked from kordoc <c>src/hwp5/page-boundary.ts</c>).
+    /// </summary>
+    private static HashSet<Node> DetectLayoutPageBreaks(List<Node> roots)
+    {
+        var breaks = new HashSet<Node>();
+        var topParas = roots.Where(n => n.Tag == TagParaHeader).ToList();
+        if (topParas.Count == 0)
+            return breaks;
+
+        int withSegs = 0;
+        int cur = 0;
+        int prevV = int.MinValue;
+        int prevH = int.MinValue;
+        bool first = true;
+        bool suppressMidReset = false;
+
+        foreach (Node p in topParas)
+        {
+            bool explicitBreak = p.Data.Length > 11 && (p.Data[11] & 0x05) != 0;
+            bool brokeByExplicit = false;
+            int beforePage = cur;
+            if (explicitBreak && !first)
+            {
+                cur++;
+                brokeByExplicit = true;
+                suppressMidReset = false;
+            }
+
+            bool paraFirst = true;
+            int startPage = cur;
+            bool hadSeg = false;
+            int intraAdd = 0;
+
+            foreach (Node k in p.Kids)
+            {
+                if (k.Tag == TagParaLineSeg && k.Data.Length >= 36)
+                {
+                    hadSeg = true;
+                    for (int off = 0; off + 36 <= k.Data.Length; off += 36)
+                    {
+                        int v = BitConverter.ToInt32(k.Data, off + 4);
+                        int h = BitConverter.ToInt32(k.Data, off + 24);
+                        bool brk = v < prevV || (paraFirst && v == prevV && h <= prevH);
+                        if (brk && !(paraFirst && brokeByExplicit))
+                        {
+                            if (!(paraFirst && suppressMidReset && v >= MidPageVertPos))
+                                cur++;
+                        }
+
+                        if (paraFirst)
+                        {
+                            suppressMidReset = false;
+                            startPage = cur;
+                        }
+
+                        paraFirst = false;
+                        prevV = v;
+                        prevH = h;
+                    }
+                }
+                else if (k.Tag == TagCtrlHeader && k.Data.Length >= 4 && ReadCtrlId(k.Data) == "tbl ")
+                {
+                    intraAdd += TableIntraBreaks(k);
+                }
+            }
+
+            if (hadSeg)
+                withSegs++;
+
+            if (!first && startPage > beforePage)
+                breaks.Add(p);
+
+            first = false;
+            if (intraAdd > 0)
+            {
+                cur += intraAdd;
+                suppressMidReset = true;
+            }
+        }
+
+        return withSegs == topParas.Count ? breaks : [];
+    }
+
+    private static int TableIntraBreaks(Node tblCtrl)
+    {
+        var rowMax = new Dictionary<int, int>();
+        int curRow = -1;
+        int prevV = int.MinValue;
+        int resets = 0;
+
+        void Flush()
+        {
+            if (curRow >= 0)
+                rowMax[curRow] = Math.Max(rowMax.GetValueOrDefault(curRow), resets);
+            resets = 0;
+            prevV = int.MinValue;
+        }
+
+        foreach (Node k in tblCtrl.Kids)
+        {
+            if (k.Tag == TagListHeader && k.Data.Length >= 12)
+            {
+                Flush();
+                curRow = U16(k.Data, 10);
+                foreach (Node pk in k.Kids.Where(pk => pk.Tag == TagParaHeader))
+                    ScanCellSegs(pk, ref prevV, ref resets);
+            }
+            else if (k.Tag == TagParaHeader && curRow >= 0)
+            {
+                ScanCellSegs(k, ref prevV, ref resets);
+            }
+        }
+
+        Flush();
+        return rowMax.Values.Sum();
+
+        static void ScanCellSegs(Node paraNode, ref int pv, ref int r)
+        {
+            foreach (Node seg in paraNode.Kids.Where(x => x.Tag == TagParaLineSeg))
+            {
+                for (int off = 0; off + 36 <= seg.Data.Length; off += 36)
+                {
+                    int v = BitConverter.ToInt32(seg.Data, off + 4);
+                    if (v < pv)
+                        r++;
+                    pv = v;
+                }
+            }
+        }
+    }
+
     private static Node? Find(IEnumerable<Node> nodes, int tag)
     {
         foreach (Node node in nodes)
@@ -205,6 +408,9 @@ internal sealed class HwpReader
     /// <summary>A COLORREF (0x00BBGGRR) as "#rrggbb"; 0xFFFFFFFF (none) as null.</summary>
     private static string? Bgr(uint value) =>
         value == 0xFFFFFFFF ? null : $"#{value & 0xFF:x2}{(value >> 8) & 0xFF:x2}{(value >> 16) & 0xFF:x2}";
+
+    private static string ReadCtrlId(byte[] d) =>
+        new([(char)d[3], (char)d[2], (char)d[1], (char)d[0]]);
 
     // ---- DocInfo ----
 
@@ -237,9 +443,9 @@ internal sealed class HwpReader
                         break;
 
                     case TagBorderFill:
-                        bool border = d.Length >= 26 && Enumerable.Range(0, 4).Any(i => d[2 + (i * 6)] != 0);
+                        HwpCellBorders edges = ParseBorderFillEdges(d);
                         string? background = d.Length >= 40 && (U32(d, 32) & 1) != 0 ? Bgr(U32(d, 36)) : null;
-                        _fills.Add(new Fill(border, background));
+                        _fills.Add(new Fill(edges.HasAny, edges, background));
                         break;
 
                     case TagCharShape when d.Length >= 56:
@@ -256,9 +462,19 @@ internal sealed class HwpReader
                             ((attr >> 15) & 1) != 0 ? 1 : ((attr >> 16) & 1) != 0 ? -1 : 0,
                             color != 0 ? Bgr(color) : null,
                             face < hangulFaces ? faces[face] : null,
-
-                            // Width ratios (장평) are 7 bytes from offset 14, letter spacings (자간, signed) from 21; Hangul first.
                             HwpSpacing.ToEm((sbyte)d[21], d[14] == 0 ? 100 : d[14])));
+                        break;
+
+                    case TagNumbering when d.Length >= 14:
+                        _numberings.Add(ParseNumbering(d));
+                        break;
+
+                    case TagBullet when d.Length >= 14:
+                        ushort bulletCode = U16(d, 12);
+                        string bulletChar = bulletCode > 0 && bulletCode != 0xFFFF
+                            ? HwpPuaMapper.MapText(((char)bulletCode).ToString(), unfoldHwp5: true)
+                            : "•";
+                        _bullets.Add(bulletChar);
                         break;
 
                     case TagParaShape when d.Length >= 24:
@@ -272,7 +488,10 @@ internal sealed class HwpReader
                                 line = value / 100.0;
                         }
 
-                        _paras.Add(new ParaShape(align, I32(d, 4) / 200.0, I32(d, 12) / 200.0, I32(d, 16) / 200.0, I32(d, 20) / 200.0, line));
+                        int headType = (int)((pattr >> 23) & 3);
+                        int paraLevel = (int)((pattr >> 25) & 7);
+                        int numberingId = d.Length >= 32 ? U16(d, 30) : 0;
+                        _paras.Add(new ParaShape(align, I32(d, 4) / 200.0, I32(d, 12) / 200.0, I32(d, 16) / 200.0, I32(d, 20) / 200.0, line, headType, paraLevel, numberingId));
                         break;
                 }
             }
@@ -281,6 +500,136 @@ internal sealed class HwpReader
                 // A short or damaged record: skip it.
             }
         }
+    }
+
+    private static HwpCellBorders ParseBorderFillEdges(byte[] d)
+    {
+        // Order in HWP5 BORDER_FILL: left(0), right(1), top(2), bottom(3), each 6 bytes: type(u8), width(u8), color(COLORREF u32).
+        return new HwpCellBorders(
+            Top: ParseEdge(d, 2),
+            Right: ParseEdge(d, 1),
+            Bottom: ParseEdge(d, 3),
+            Left: ParseEdge(d, 0));
+
+        static HwpBorderEdge? ParseEdge(byte[] data, int index)
+        {
+            int o = 2 + (index * 6);
+            if (data.Length < o + 6)
+                return null;
+
+            byte lineType = data[o];
+            if (lineType == 0)
+                return null;
+
+            uint colorRaw = BitConverter.ToUInt32(data, o + 2);
+            if ((colorRaw & 0xFFFFFF) == 0xFFFFFF)
+                return null; // invisible white border on white page
+
+            string color = Bgr(colorRaw) ?? "#000000";
+            string cssStyle = lineType switch
+            {
+                2 or 4 or 5 or 6 => "dashed",
+                3 or 7 => "dotted",
+                8 or 9 or 10 or 11 => "double",
+                _ => "solid",
+            };
+            double widthPt = Hwp5ThicknessPt(data[o + 1], cssStyle == "double");
+            return new HwpBorderEdge(cssStyle, widthPt, color);
+        }
+    }
+
+    private static double Hwp5ThicknessPt(byte code, bool isDouble)
+    {
+        double mm = code switch
+        {
+            0 => 0.1,
+            1 => 0.12,
+            2 => 0.15,
+            3 => 0.2,
+            4 => 0.25,
+            5 => 0.3,
+            6 => 0.4,
+            7 => 0.5,
+            8 => 0.6,
+            9 => 0.7,
+            10 => 1.0,
+            11 => 1.5,
+            12 => 2.0,
+            13 => 3.0,
+            14 => 4.0,
+            15 => 5.0,
+            _ => 0.12,
+        };
+        double pt = Math.Max(0.5, Math.Round(mm * 2.834645, 2));
+        return isDouble ? Math.Max(pt, 2.0) : pt;
+    }
+
+    private static NumberingDef ParseNumbering(byte[] d)
+    {
+        var formats = new string[7];
+        var numFormats = new string[7];
+        var starts = new int[7];
+        Array.Fill(starts, 1);
+
+        int offset = 0;
+        for (int level = 0; level < 7; level++)
+        {
+            if (offset + 12 > d.Length)
+            {
+                formats[level] = string.Empty;
+                numFormats[level] = "DIGIT";
+                continue;
+            }
+
+            uint attr = U32(d, offset);
+            numFormats[level] = HwpNumbering.FromHwp5Code((int)((attr >> 5) & 0x0F));
+            offset += 12;
+
+            if (offset + 2 <= d.Length)
+            {
+                int len = U16(d, offset);
+                offset += 2;
+                int byteLen = len * 2;
+                if (len > 0 && offset + byteLen <= d.Length)
+                {
+                    formats[level] = Encoding.Unicode.GetString(d, offset, byteLen);
+                    offset += byteLen;
+                }
+                else
+                {
+                    formats[level] = string.Empty;
+                }
+            }
+            else
+            {
+                formats[level] = string.Empty;
+            }
+        }
+
+        int baseStart = 1;
+        if (offset + 2 <= d.Length)
+        {
+            int s = U16(d, offset);
+            if (s > 0)
+                baseStart = s;
+            offset += 2;
+        }
+
+        for (int level = 0; level < 7; level++)
+        {
+            if (offset + 4 <= d.Length)
+            {
+                int s = (int)U32(d, offset);
+                starts[level] = s > 0 ? s : baseStart;
+                offset += 4;
+            }
+            else
+            {
+                starts[level] = baseStart;
+            }
+        }
+
+        return new NumberingDef(formats, numFormats, starts);
     }
 
     private static HwpPage PageOf(byte[] d)
@@ -317,20 +666,36 @@ internal sealed class HwpReader
             {
                 break;
             }
-            else if (ch is 10 or 30 or 31)
+            else if (ch == 10)
             {
-                chars.Add((position, ch == 10 ? '\n' : ' '));
+                // Some HWP5 documents wrap inline equations as 0x000A + 0x000B + 14-byte extended payload.
+                if (i + 18 <= n && (rec[i + 2] | (rec[i + 3] << 8)) == 0x000B)
+                {
+                    i += 18;
+                    position += 9;
+                }
+                else
+                {
+                    chars.Add((position, '\n'));
+                    i += 2;
+                    position++;
+                }
+            }
+            else if (ch is 30 or 31)
+            {
+                chars.Add((position, ' '));
                 i += 2;
                 position++;
             }
             else if (ch == 0 || ch is >= 24 and <= 29)
             {
+                // 0x18 (24) soft hyphen is not drawn by Hancom; 25..29 reserved.
                 i += 2;
                 position++;
             }
             else
             {
-                // Inline and extended controls (tab, fields, tables, pictures...) take 8 characters.
+                // Inline and extended controls (tab, fields, tables, pictures, equations...) take 8 WCHARs.
                 if (ch == 9)
                     chars.Add((position, '\t'));
 
@@ -367,6 +732,18 @@ internal sealed class HwpReader
             }
         }
 
+        // Capture section outline numbering ID if this paragraph carries secd.
+        foreach (Node control in controls)
+        {
+            if (control.Data.Length >= 26 && ReadCtrlId(control.Data) == "secd")
+            {
+                // Outline numbering ID is at offset 24 (u16) in SECD header when present.
+                int oid = U16(control.Data, 24);
+                if (oid > 0)
+                    _outlineNumberingId = oid;
+            }
+        }
+
         var para = new HwpPara
         {
             Align = shape?.Align ?? "left",
@@ -381,8 +758,12 @@ internal sealed class HwpReader
         };
 
         shapes.Sort();
-        if (shapes.Count > 0 && shapes[0].Id < _chars.Count)
-            para.Size = _chars[(int)shapes[0].Id].Size;
+        CharShape? firstCs = shapes.Count > 0 && shapes[0].Id < _chars.Count ? _chars[(int)shapes[0].Id] : null;
+        if (firstCs is not null)
+            para.Size = firstCs.Size;
+
+        // Resolve automatic numbering / bullet prefix (advance counters even on empty paragraphs, matching Hancom).
+        string? headingPrefix = ResolveHeadingPrefix(shape);
 
         if (text is not null)
         {
@@ -407,25 +788,62 @@ internal sealed class HwpReader
             Flush(para, buffer, current);
         }
 
+        if (!string.IsNullOrEmpty(headingPrefix) && para.Runs.OfType<HwpRun>().Any(r => !string.IsNullOrWhiteSpace(r.Text)))
+        {
+            para.Runs.Insert(0, new HwpRun
+            {
+                Text = headingPrefix + " ",
+                Bold = firstCs?.Bold ?? false,
+                Italic = firstCs?.Italic ?? false,
+                Size = firstCs?.Size,
+                Color = firstCs?.Color,
+                Font = firstCs?.Font,
+                Spacing = firstCs?.Spacing ?? 0,
+            });
+        }
+
         var extra = new List<object>();
         foreach (Node control in controls)
         {
             if (control.Data.Length < 4)
                 continue;
 
-            // The control id is stored reversed: "tbl " as " lbt", "gso " as " osg".
-            string id = new([(char)control.Data[3], (char)control.Data[2], (char)control.Data[1], (char)control.Data[0]]);
+            string id = ReadCtrlId(control.Data);
             try
             {
-                if (id == "tbl ")
+                switch (id)
                 {
-                    extra.Add(Table(control));
-                }
-                else if (id == "gso ")
-                {
-                    double w = U32(control.Data, 16) / 100.0, h = U32(control.Data, 20) / 100.0;
-                    para.Runs.AddRange(Pictures(control, w > 0 ? w : null, h > 0 ? h : null));
-                    extra.AddRange(TextBoxParas(control));
+                    case "tbl ":
+                        extra.Add(Table(control));
+                        break;
+
+                    case "gso ":
+                        double w = U32(control.Data, 16) / 100.0, h = U32(control.Data, 20) / 100.0;
+                        para.Runs.AddRange(Pictures(control, w > 0 ? w : null, h > 0 ? h : null));
+                        extra.AddRange(TextBoxParas(control));
+                        break;
+
+                    case "eqed":
+                        if (ExtractEquation(control) is { Length: > 0 } script)
+                            para.Runs.Add(new HwpEquationRun(script));
+                        break;
+
+                    case "fn  ":
+                    case "en  ":
+                        string noteText = ExtractNoteText(control);
+                        if (noteText.Length > 0)
+                        {
+                            int num = _footnotes.Count + 1;
+                            _footnotes.Add($"{num}) {noteText}");
+                            para.Runs.Add(new HwpRun { Text = $"{num})", Sup = 1, Size = firstCs?.Size });
+                        }
+
+                        break;
+
+                    case "tcps":
+                        if (ExtractComposeText(control.Data) is { Length: > 0 } composed)
+                            para.Runs.Add(new HwpRun { Text = composed, Size = firstCs?.Size, Font = firstCs?.Font });
+                        break;
                 }
             }
             catch (Exception ex) when (ex is ArgumentException or IndexOutOfRangeException or InvalidDataException)
@@ -444,18 +862,120 @@ internal sealed class HwpReader
         return [para, .. extra];
     }
 
+    private string? ResolveHeadingPrefix(ParaShape? shape)
+    {
+        if (shape is null || shape.HeadType == 0)
+            return null;
+
+        if (shape.HeadType == 3)
+        {
+            int idx = shape.NumberingId - 1;
+            return idx >= 0 && idx < _bullets.Count ? _bullets[idx] : "•";
+        }
+
+        int numId = shape.HeadType == 1
+            ? (shape.NumberingId > 0 ? shape.NumberingId : _outlineNumberingId)
+            : shape.NumberingId;
+        if (numId <= 0 || numId > _numberings.Count)
+            return null;
+
+        NumberingDef def = _numberings[numId - 1];
+        int level = Math.Clamp(shape.ParaLevel, 0, 6);
+        int[] counters = _numberingState.Advance($"hwp5:{numId}", level);
+        string fmt = def.LevelFormats[level];
+        if (string.IsNullOrEmpty(fmt))
+            return null;
+
+        return HwpNumbering.Expand(fmt, counters, def.NumberFormats, def.StartNumbers);
+    }
+
     private void Flush(HwpPara para, StringBuilder buffer, long shapeId)
     {
         if (buffer.Length == 0)
             return;
 
+        string mapped = HwpPuaMapper.MapText(buffer.ToString(), unfoldHwp5: true);
+        buffer.Clear();
+        if (mapped.Length == 0)
+            return;
+
         CharShape? cs = shapeId >= 0 && shapeId < _chars.Count ? _chars[(int)shapeId] : null;
         para.Runs.Add(new HwpRun
         {
-            Text = buffer.ToString(), Bold = cs?.Bold ?? false, Italic = cs?.Italic ?? false, Underline = cs?.Underline ?? false,
-            Strike = cs?.Strike ?? false, Size = cs?.Size, Color = cs?.Color, Sup = cs?.Sup ?? 0, Font = cs?.Font, Spacing = cs?.Spacing ?? 0,
+            Text = mapped,
+            Bold = cs?.Bold ?? false,
+            Italic = cs?.Italic ?? false,
+            Underline = cs?.Underline ?? false,
+            Strike = cs?.Strike ?? false,
+            Size = cs?.Size,
+            Color = cs?.Color,
+            Sup = cs?.Sup ?? 0,
+            Font = cs?.Font,
+            Spacing = cs?.Spacing ?? 0,
         });
-        buffer.Clear();
+    }
+
+    private static string? ExtractEquation(Node ctrl)
+    {
+        Node? eq = Find(ctrl.Kids, TagEqEdit);
+        if (eq is null || eq.Data.Length < 6)
+            return null;
+
+        int len = U16(eq.Data, 4);
+        if (len <= 0 || 6 + (len * 2) > eq.Data.Length)
+            return null;
+
+        return Encoding.Unicode.GetString(eq.Data, 6, len * 2).Replace("\0", string.Empty).Trim();
+    }
+
+    private string ExtractNoteText(Node ctrl)
+    {
+        var sb = new StringBuilder();
+        foreach (Node k in ctrl.Kids)
+        {
+            if (k.Tag == TagParaHeader)
+                AppendParaPlainText(k, sb);
+            else if (k.Tag == TagListHeader)
+            {
+                foreach (Node pk in k.Kids.Where(x => x.Tag == TagParaHeader))
+                    AppendParaPlainText(pk, sb);
+            }
+        }
+
+        return sb.ToString().Trim();
+    }
+
+    private void AppendParaPlainText(Node paraNode, StringBuilder sb)
+    {
+        foreach (Node k in paraNode.Kids)
+        {
+            if (k.Tag == TagParaText)
+            {
+                string raw = new([.. DecodeText(k.Data).Select(c => c.Char)]);
+                string mapped = HwpPuaMapper.MapText(raw, unfoldHwp5: true).Trim();
+                if (mapped.Length > 0)
+                {
+                    if (sb.Length > 0)
+                        sb.Append(' ');
+                    sb.Append(mapped);
+                }
+            }
+        }
+    }
+
+    private static string? ExtractComposeText(byte[] data)
+    {
+        // TCPS: ctrlId(4) + charCount(u16@4) + chars(UTF-16LE) + circleType(u32 after chars)
+        if (data.Length < 6)
+            return null;
+
+        int len = U16(data, 4);
+        if (len <= 0 || len > 16 || 6 + (len * 2) > data.Length)
+            return null;
+
+        string chars = Encoding.Unicode.GetString(data, 6, len * 2).Trim('\0');
+        bool enclosed = data.Length >= 6 + (len * 2) + 4 && U32(data, 6 + (len * 2)) != 0;
+        return HwpPuaMapper.ComposeText(chars, enclosed);
     }
 
     private HwpImage? Image(int binItem, double? width, double? height)
@@ -528,15 +1048,30 @@ internal sealed class HwpReader
         var widths = new Dictionary<int, double>();
         HwpCell? current = null;
         bool anyBorder = false;
+        string? caption = null;
+        bool seenTableTag = false;
+
         foreach (Node k in node.Kids)
         {
             if (k.Tag == TagTable)
             {
+                seenTableTag = true;
                 columns = U16(k.Data, 6);
             }
             else if (k.Tag == TagListHeader)
             {
                 byte[] d = k.Data;
+                if (!seenTableTag && d.Length < 34)
+                {
+                    // Caption list header appears before or outside cell headers with shorter data.
+                    var capSb = new StringBuilder();
+                    foreach (Node pk in k.Kids.Where(pk => pk.Tag == TagParaHeader))
+                        AppendParaPlainText(pk, capSb);
+                    if (capSb.Length > 0)
+                        caption = capSb.ToString().Trim();
+                    continue;
+                }
+
                 current = new HwpCell();
                 if (d.Length >= 34)
                 {
@@ -545,10 +1080,18 @@ internal sealed class HwpReader
                     current.RowSpan = Math.Max(1, (int)U16(d, 14, 1));
                     current.Width = U32(d, 16) / 100.0;
                     current.Height = U32(d, 20) / 100.0;
+                    uint listAttr = U32(d, 4);
+                    current.VAlign = ((listAttr >> 5) & 3) switch
+                    {
+                        1 => "middle",
+                        2 => "bottom",
+                        _ => "top",
+                    };
                     int fillId = U16(d, 32);
                     Fill? fill = fillId >= 1 && fillId <= _fills.Count ? _fills[fillId - 1] : null;
                     current.Background = fill?.Background;
                     current.Border = fill?.Border ?? false;
+                    current.Borders = fill?.Borders;
                     anyBorder |= current.Border;
                     if (current.ColSpan == 1)
                         widths[column] = current.Width.Value;
@@ -569,7 +1112,7 @@ internal sealed class HwpReader
             }
         }
 
-        var table = new HwpTable { Border = anyBorder };
+        var table = new HwpTable { Border = anyBorder, Caption = caption };
         int lastRow = int.MinValue;
         foreach ((int row, _, HwpCell cell) in cells.OrderBy(c => c.Row).ThenBy(c => c.Column))
         {
@@ -582,7 +1125,6 @@ internal sealed class HwpReader
             if (cell.Blocks.Count == 0)
                 cell.Blocks.Add(new HwpPara());
 
-            cell.Border = anyBorder;
             table.Rows[^1].Add(cell);
         }
 
